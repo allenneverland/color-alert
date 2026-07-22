@@ -322,7 +322,7 @@
                     </Grid>
 
                     <TextBlock Margin="0,14,0,0"
-                               Text="顏色敏感度越高，接受的近似色越多；面積敏感度越高，越小的數字或新增面積也會觸發。選區越貼近小數字越容易偵測；必須連續 3 次達標才會提示。"
+                               Text="建議先使用標準。顏色敏感度越高，接受的近似色越多；面積敏感度越高，越小的數字或新增面積也會觸發。最高設定較容易把相近背景視為目標色；必須連續 3 次達標才會提示。"
                                TextWrapping="Wrap"
                                Foreground="{StaticResource MutedTextBrush}"
                                FontSize="12" />

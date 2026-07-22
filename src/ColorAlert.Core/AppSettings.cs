@@ -11,7 +11,7 @@ public sealed record AppSettings
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ScreenRegion? Region { get; init; }
 
-    public DetectionSettings Detection { get; init; } = new();
+    public DetectionSettings Detection { get; init; } = DetectionSettings.CreateDefault();
 
     public AlertRepeatMode AlertMode { get; init; } = AlertRepeatMode.Once;
 
@@ -39,7 +39,8 @@ public sealed record AppSettings
         {
             Regions = [.. normalizedRegions],
             Region = null,
-            Detection = (Detection ?? new DetectionSettings()).Normalize(),
+            Detection = (Detection ?? DetectionSettings.CreateDefault())
+                .MigrateSavedSensitivityScale(),
             AlertMode = Enum.IsDefined(AlertMode) ? AlertMode : AlertRepeatMode.Once,
         };
     }

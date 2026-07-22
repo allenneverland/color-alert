@@ -18,9 +18,9 @@ public sealed class TargetAreaStateMachineTests
     {
         var detector = new TargetAreaStateMachine();
 
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.0009, Settings));
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.0009, Settings));
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.0009, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.00009, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.00009, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.00009, Settings));
         Assert.IsFalse(detector.IsPresent);
     }
 
@@ -29,44 +29,44 @@ public sealed class TargetAreaStateMachineTests
     {
         var detector = new TargetAreaStateMachine();
 
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.002, Settings));
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.002, Settings));
-        Assert.AreEqual(AlertTransition.Triggered, detector.Observe(0.002, Settings));
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.002, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.0002, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.0002, Settings));
+        Assert.AreEqual(AlertTransition.Triggered, detector.Observe(0.0002, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.0002, Settings));
         Assert.IsTrue(detector.IsPresent);
 
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.0031, Settings));
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.0031, Settings));
-        Assert.AreEqual(AlertTransition.Triggered, detector.Observe(0.0031, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.00031, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.00031, Settings));
+        Assert.AreEqual(AlertTransition.Triggered, detector.Observe(0.00031, Settings));
     }
 
     [TestMethod]
     public void StableDecreaseRebasesAndCompleteDisappearanceClears()
     {
         var detector = new TargetAreaStateMachine();
-        _ = detector.Observe(0.002, Settings);
-        _ = detector.Observe(0.002, Settings);
-        _ = detector.Observe(0.002, Settings);
+        _ = detector.Observe(0.0002, Settings);
+        _ = detector.Observe(0.0002, Settings);
+        _ = detector.Observe(0.0002, Settings);
 
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.0014, Settings));
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.0014, Settings));
-        Assert.AreEqual(AlertTransition.Rebased, detector.Observe(0.0014, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.00014, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.00014, Settings));
+        Assert.AreEqual(AlertTransition.Rebased, detector.Observe(0.00014, Settings));
         Assert.IsTrue(detector.IsPresent);
 
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.0025, Settings));
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.0025, Settings));
-        Assert.AreEqual(AlertTransition.Triggered, detector.Observe(0.0025, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.00025, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.00025, Settings));
+        Assert.AreEqual(AlertTransition.Triggered, detector.Observe(0.00025, Settings));
 
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.0004, Settings));
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.0004, Settings));
-        Assert.AreEqual(AlertTransition.Cleared, detector.Observe(0.0004, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.00004, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.00004, Settings));
+        Assert.AreEqual(AlertTransition.Cleared, detector.Observe(0.00004, Settings));
         Assert.IsFalse(detector.IsPresent);
     }
 
     [TestMethod]
-    [DataRow(1, 100, 2, 0.0001)]
-    [DataRow(50, 50, 12, 0.001)]
-    [DataRow(100, 1, 24, 0.02)]
+    [DataRow(1, 100, 12, 0.00001)]
+    [DataRow(50, 50, 24, 0.0001)]
+    [DataRow(100, 1, 48, 0.001)]
     public void ColorAndAreaSensitivitiesMapIndependently(
         int colorSensitivity,
         int areaSensitivity,
@@ -80,23 +80,36 @@ public sealed class TargetAreaStateMachineTests
         };
 
         Assert.AreEqual(expectedTolerance, settings.ColorTolerance);
-        Assert.AreEqual(expectedRatio, settings.TargetPixelRatio, 0.000_001);
+        Assert.AreEqual(expectedRatio, settings.TargetPixelRatio, 0.000_000_1);
     }
 
     [TestMethod]
-    public void DefaultsAndLegacySensitivityNormalizeToBothSettings()
+    public void DefaultsAndPreviousSensitivityScaleMigrateOnce()
     {
-        var defaults = JsonSerializer.Deserialize<DetectionSettings>("{}")!.Normalize();
-        var settings = JsonSerializer.Deserialize<DetectionSettings>(
-            """{"Sensitivity":75}""")!.Normalize();
+        var defaults = new AppSettings().Normalize();
+        var previousSettings = JsonSerializer.Deserialize<AppSettings>(
+            """{"Detection":{"ColorSensitivity":100,"AreaSensitivity":100}}""")!
+            .Normalize();
+        var legacySettings = JsonSerializer.Deserialize<AppSettings>(
+            """{"Detection":{"Sensitivity":100}}""")!
+            .Normalize();
+        var normalizedAgain = previousSettings.Normalize();
 
-        Assert.AreEqual(50, defaults.ColorSensitivity);
-        Assert.AreEqual(50, defaults.AreaSensitivity);
-        Assert.AreEqual(75, settings.ColorSensitivity);
-        Assert.AreEqual(75, settings.AreaSensitivity);
+        Assert.AreEqual(50, defaults.Detection.ColorSensitivity);
+        Assert.AreEqual(50, defaults.Detection.AreaSensitivity);
+        Assert.AreEqual(50, previousSettings.Detection.ColorSensitivity);
+        Assert.AreEqual(50, previousSettings.Detection.AreaSensitivity);
+        Assert.AreEqual(50, legacySettings.Detection.ColorSensitivity);
+        Assert.AreEqual(50, legacySettings.Detection.AreaSensitivity);
+        Assert.AreEqual(50, normalizedAgain.Detection.ColorSensitivity);
+        Assert.AreEqual(50, normalizedAgain.Detection.AreaSensitivity);
 
-        using var document = JsonDocument.Parse(JsonSerializer.Serialize(settings));
-        Assert.IsFalse(document.RootElement.TryGetProperty(
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(previousSettings));
+        var detection = document.RootElement.GetProperty(nameof(AppSettings.Detection));
+        Assert.AreEqual(
+            DetectionSettings.CurrentSensitivityScaleVersion,
+            detection.GetProperty(nameof(DetectionSettings.SensitivityScaleVersion)).GetInt32());
+        Assert.IsFalse(detection.TryGetProperty(
             nameof(DetectionSettings.Sensitivity),
             out _));
     }
@@ -112,8 +125,8 @@ public sealed class TargetAreaStateMachineTests
 
         var simultaneous = coordinator.Observe(
             [
-                new TargetObservation(firstRegionId, MonitoredColor.Yellow, 0.002),
-                new TargetObservation(secondRegionId, MonitoredColor.Blue, 0.002),
+                new TargetObservation(firstRegionId, MonitoredColor.Yellow, 0.0002),
+                new TargetObservation(secondRegionId, MonitoredColor.Blue, 0.0002),
             ],
             immediateSettings);
 
@@ -122,19 +135,19 @@ public sealed class TargetAreaStateMachineTests
 
         var unchanged = coordinator.Observe(
             [
-                new TargetObservation(firstRegionId, MonitoredColor.Yellow, 0.002),
-                new TargetObservation(secondRegionId, MonitoredColor.Blue, 0.002),
+                new TargetObservation(firstRegionId, MonitoredColor.Yellow, 0.0002),
+                new TargetObservation(secondRegionId, MonitoredColor.Blue, 0.0002),
             ],
             immediateSettings);
         Assert.IsFalse(unchanged.ShouldAlert);
 
         var newBlue = coordinator.Observe(
-            [new TargetObservation(firstRegionId, MonitoredColor.Blue, 0.002)],
+            [new TargetObservation(firstRegionId, MonitoredColor.Blue, 0.0002)],
             immediateSettings);
         Assert.IsTrue(newBlue.ShouldAlert);
 
         var moreYellow = coordinator.Observe(
-            [new TargetObservation(firstRegionId, MonitoredColor.Yellow, 0.0031)],
+            [new TargetObservation(firstRegionId, MonitoredColor.Yellow, 0.00031)],
             immediateSettings);
         Assert.IsTrue(moreYellow.ShouldAlert);
     }
