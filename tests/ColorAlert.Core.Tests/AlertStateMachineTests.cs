@@ -1,3 +1,4 @@
+using System.Text.Json;
 using ColorAlert.Core;
 
 namespace ColorAlert.Core.Tests;
@@ -7,7 +8,8 @@ public sealed class TargetAreaStateMachineTests
 {
     private static readonly DetectionSettings Settings = new()
     {
-        Sensitivity = 50,
+        ColorSensitivity = 50,
+        AreaSensitivity = 50,
         StableFrameCount = 3,
     };
 
@@ -62,18 +64,41 @@ public sealed class TargetAreaStateMachineTests
     }
 
     [TestMethod]
-    [DataRow(1, 2, 0.02)]
-    [DataRow(50, 12, 0.001)]
-    [DataRow(100, 24, 0.0001)]
-    public void SensitivityMapsToExpectedThresholds(
-        int sensitivity,
+    [DataRow(1, 100, 2, 0.0001)]
+    [DataRow(50, 50, 12, 0.001)]
+    [DataRow(100, 1, 24, 0.02)]
+    public void ColorAndAreaSensitivitiesMapIndependently(
+        int colorSensitivity,
+        int areaSensitivity,
         int expectedTolerance,
         double expectedRatio)
     {
-        var thresholds = DetectionSettings.GetThresholds(sensitivity);
+        var settings = new DetectionSettings
+        {
+            ColorSensitivity = colorSensitivity,
+            AreaSensitivity = areaSensitivity,
+        };
 
-        Assert.AreEqual(expectedTolerance, thresholds.ColorTolerance);
-        Assert.AreEqual(expectedRatio, thresholds.TargetPixelRatio, 0.000_001);
+        Assert.AreEqual(expectedTolerance, settings.ColorTolerance);
+        Assert.AreEqual(expectedRatio, settings.TargetPixelRatio, 0.000_001);
+    }
+
+    [TestMethod]
+    public void DefaultsAndLegacySensitivityNormalizeToBothSettings()
+    {
+        var defaults = JsonSerializer.Deserialize<DetectionSettings>("{}")!.Normalize();
+        var settings = JsonSerializer.Deserialize<DetectionSettings>(
+            """{"Sensitivity":75}""")!.Normalize();
+
+        Assert.AreEqual(50, defaults.ColorSensitivity);
+        Assert.AreEqual(50, defaults.AreaSensitivity);
+        Assert.AreEqual(75, settings.ColorSensitivity);
+        Assert.AreEqual(75, settings.AreaSensitivity);
+
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(settings));
+        Assert.IsFalse(document.RootElement.TryGetProperty(
+            nameof(DetectionSettings.Sensitivity),
+            out _));
     }
 
     [TestMethod]

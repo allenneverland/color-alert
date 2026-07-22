@@ -251,7 +251,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void SensitivitySlider_ValueChanged(
+    private void ColorSensitivitySlider_ValueChanged(
         object sender,
         RoutedPropertyChangedEventArgs<double> e)
     {
@@ -262,7 +262,27 @@ public partial class MainWindow : Window
 
         var detection = _settings.Detection with
         {
-            Sensitivity = (int)Math.Round(SensitivitySlider.Value),
+            ColorSensitivity = (int)Math.Round(ColorSensitivitySlider.Value),
+        };
+
+        _settings = _settings with { Detection = detection.Normalize() };
+        _monitorController?.UpdateSettings(_settings.Detection);
+        UpdateDetectionDisplay();
+        ScheduleSave();
+    }
+
+    private void AreaSensitivitySlider_ValueChanged(
+        object sender,
+        RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (!_uiReady || _updatingControls)
+        {
+            return;
+        }
+
+        var detection = _settings.Detection with
+        {
+            AreaSensitivity = (int)Math.Round(AreaSensitivitySlider.Value),
         };
 
         _settings = _settings with { Detection = detection.Normalize() };
@@ -742,7 +762,8 @@ public partial class MainWindow : Window
         _updatingControls = true;
         try
         {
-            SensitivitySlider.Value = _settings.Detection.Sensitivity;
+            ColorSensitivitySlider.Value = _settings.Detection.ColorSensitivity;
+            AreaSensitivitySlider.Value = _settings.Detection.AreaSensitivity;
             ShowRegionOverlayCheckBox.IsChecked = _settings.ShowRegionOverlay;
             OneSoundRadioButton.IsChecked = _settings.AlertMode == AlertRepeatMode.Once;
             ThreeSoundsRadioButton.IsChecked = _settings.AlertMode == AlertRepeatMode.ThreeTimes;
@@ -760,13 +781,18 @@ public partial class MainWindow : Window
 
     private void UpdateDetectionDisplay()
     {
-        SensitivityValueText.Text = _settings.Detection.Sensitivity switch
-        {
-            <= 33 => "低",
-            <= 66 => "標準",
-            _ => "高",
-        };
+        ColorSensitivityValueText.Text = FormatSensitivity(
+            _settings.Detection.ColorSensitivity);
+        AreaSensitivityValueText.Text = FormatSensitivity(
+            _settings.Detection.AreaSensitivity);
     }
+
+    private static string FormatSensitivity(int sensitivity) => sensitivity switch
+    {
+        <= 33 => "低",
+        <= 66 => "標準",
+        _ => "高",
+    };
 
     private void InitializeRegionStates()
     {

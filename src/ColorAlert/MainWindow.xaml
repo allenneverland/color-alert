@@ -237,16 +237,16 @@
 
                         <TextBlock Grid.Row="0"
                                    Grid.Column="0"
-                                   Text="敏感度"
+                                   Text="顏色敏感度"
                                    Foreground="{StaticResource TextBrush}"
                                    FontSize="14" />
-                        <TextBlock x:Name="SensitivityValueText"
+                        <TextBlock x:Name="ColorSensitivityValueText"
                                    Grid.Row="0"
                                    Grid.Column="1"
                                    Text="標準"
                                    Foreground="{StaticResource MutedTextBrush}"
                                    FontSize="13" />
-                        <Slider x:Name="SensitivitySlider"
+                        <Slider x:Name="ColorSensitivitySlider"
                                 Grid.Row="1"
                                 Grid.ColumnSpan="2"
                                 Margin="0,7,0,0"
@@ -255,7 +255,40 @@
                                 Value="50"
                                 TickFrequency="1"
                                 IsSnapToTickEnabled="True"
-                                ValueChanged="SensitivitySlider_ValueChanged" />
+                                ValueChanged="ColorSensitivitySlider_ValueChanged" />
+                    </Grid>
+
+                    <Grid Margin="0,18,0,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Row="0"
+                                   Grid.Column="0"
+                                   Text="面積敏感度"
+                                   Foreground="{StaticResource TextBrush}"
+                                   FontSize="14" />
+                        <TextBlock x:Name="AreaSensitivityValueText"
+                                   Grid.Row="0"
+                                   Grid.Column="1"
+                                   Text="標準"
+                                   Foreground="{StaticResource MutedTextBrush}"
+                                   FontSize="13" />
+                        <Slider x:Name="AreaSensitivitySlider"
+                                Grid.Row="1"
+                                Grid.ColumnSpan="2"
+                                Margin="0,7,0,0"
+                                Minimum="1"
+                                Maximum="100"
+                                Value="50"
+                                TickFrequency="1"
+                                IsSnapToTickEnabled="True"
+                                ValueChanged="AreaSensitivitySlider_ValueChanged" />
                     </Grid>
 
                     <Grid Margin="0,20,0,0">
@@ -289,7 +322,7 @@
                     </Grid>
 
                     <TextBlock Margin="0,14,0,0"
-                               Text="敏感度越高，近似色判定越寬鬆，且越小的新增面積也會觸發。選區越貼近小數字越容易偵測；必須連續 3 次達標才會提示。"
+                               Text="顏色敏感度越高，接受的近似色越多；面積敏感度越高，越小的數字或新增面積也會觸發。選區越貼近小數字越容易偵測；必須連續 3 次達標才會提示。"
                                TextWrapping="Wrap"
                                Foreground="{StaticResource MutedTextBrush}"
                                FontSize="12" />
