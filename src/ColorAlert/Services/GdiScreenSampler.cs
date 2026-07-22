@@ -43,7 +43,10 @@ internal sealed class GdiScreenSampler : IDisposable
         }
     }
 
-    internal SampleStatistics Sample(ScreenRegion region, int blackTolerance)
+    internal SampleStatistics Sample(
+        ScreenRegion region,
+        RgbColor targetColor,
+        int colorTolerance)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -55,56 +58,41 @@ internal sealed class GdiScreenSampler : IDisposable
         var targetWidth = Math.Min(region.Width, MaximumSampleDimension);
         var targetHeight = Math.Min(region.Height, MaximumSampleDimension);
         EnsureBuffer(targetWidth, targetHeight);
-
-        var screenDc = NativeMethods.GetDC(nint.Zero);
-        if (screenDc == nint.Zero)
-        {
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "無法取得桌面畫面。");
-        }
-
-        try
-        {
-            var copied = NativeMethods.StretchBlt(
-                _memoryDc,
-                0,
-                0,
-                targetWidth,
-                targetHeight,
-                screenDc,
-                region.X,
-                region.Y,
-                region.Width,
-                region.Height,
-                NativeMethods.SourceCopy | NativeMethods.CaptureLayeredWindows);
-
-            if (!copied)
-            {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "螢幕擷取失敗。");
-            }
-        }
-        finally
-        {
-            _ = NativeMethods.ReleaseDC(nint.Zero, screenDc);
-        }
+        Capture(region, targetWidth, targetHeight);
 
         Marshal.Copy(_bits, _pixelBuffer, 0, _pixelBuffer.Length);
 
-        var normalizedTolerance = Math.Clamp(blackTolerance, 0, 255);
-        var nonBlackCount = 0;
+        var normalizedTolerance = Math.Clamp(colorTolerance, 0, 255);
+        var mismatchCount = 0;
 
         for (var offset = 0; offset < _pixelBuffer.Length; offset += BytesPerPixel)
         {
-            var blue = _pixelBuffer[offset];
-            var green = _pixelBuffer[offset + 1];
-            var red = _pixelBuffer[offset + 2];
+            var blueDifference = Math.Abs(_pixelBuffer[offset] - targetColor.Blue);
+            var greenDifference = Math.Abs(_pixelBuffer[offset + 1] - targetColor.Green);
+            var redDifference = Math.Abs(_pixelBuffer[offset + 2] - targetColor.Red);
 
-            if (red > normalizedTolerance || green > normalizedTolerance || blue > normalizedTolerance)
+            if (redDifference > normalizedTolerance ||
+                greenDifference > normalizedTolerance ||
+                blueDifference > normalizedTolerance)
             {
-                nonBlackCount++;
+                mismatchCount++;
             }
         }
 
-        return new SampleStatistics(targetWidth * targetHeight, nonBlackCount);
+        return new SampleStatistics(targetWidth * targetHeight, mismatchCount);
+    }
+
+    internal RgbColor SampleColorAt(int x, int y)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        EnsureBuffer(1, 1);
+        Capture(new ScreenRegion(x, y, 1, 1), 1, 1);
+        Marshal.Copy(_bits, _pixelBuffer, 0, BytesPerPixel);
+
+        return new RgbColor(
+            Red: _pixelBuffer[2],
+            Green: _pixelBuffer[1],
+            Blue: _pixelBuffer[0]);
     }
 
     public void Dispose()
@@ -189,5 +177,39 @@ internal sealed class GdiScreenSampler : IDisposable
         _sampleWidth = width;
         _sampleHeight = height;
         _pixelBuffer = new byte[width * height * BytesPerPixel];
+    }
+
+    private void Capture(ScreenRegion sourceRegion, int targetWidth, int targetHeight)
+    {
+        var screenDc = NativeMethods.GetDC(nint.Zero);
+        if (screenDc == nint.Zero)
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "無法取得桌面畫面。");
+        }
+
+        try
+        {
+            var copied = NativeMethods.StretchBlt(
+                _memoryDc,
+                0,
+                0,
+                targetWidth,
+                targetHeight,
+                screenDc,
+                sourceRegion.X,
+                sourceRegion.Y,
+                sourceRegion.Width,
+                sourceRegion.Height,
+                NativeMethods.SourceCopy | NativeMethods.CaptureLayeredWindows);
+
+            if (!copied)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "螢幕擷取失敗。");
+            }
+        }
+        finally
+        {
+            _ = NativeMethods.ReleaseDC(nint.Zero, screenDc);
+        }
     }
 }

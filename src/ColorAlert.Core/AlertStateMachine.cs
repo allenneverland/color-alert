@@ -14,14 +14,14 @@ public sealed class AlertStateMachine
 
     public bool IsAlerted { get; private set; }
 
-    public AlertTransition Observe(double nonBlackRatio, DetectionSettings settings)
+    public AlertTransition Observe(double mismatchRatio, DetectionSettings settings)
     {
-        if (!double.IsFinite(nonBlackRatio) || nonBlackRatio < 0d || nonBlackRatio > 1d)
+        if (!double.IsFinite(mismatchRatio) || mismatchRatio < 0d || mismatchRatio > 1d)
         {
             throw new ArgumentOutOfRangeException(
-                nameof(nonBlackRatio),
-                nonBlackRatio,
-                "非黑比例必須介於 0 與 1 之間。");
+                nameof(mismatchRatio),
+                mismatchRatio,
+                "畫面變化比例必須介於 0 與 1 之間。");
         }
 
         ArgumentNullException.ThrowIfNull(settings);
@@ -30,7 +30,7 @@ public sealed class AlertStateMachine
         if (!IsAlerted)
         {
             _resetFrameCount = 0;
-            _triggerFrameCount = nonBlackRatio >= normalizedSettings.TriggerRatio
+            _triggerFrameCount = mismatchRatio >= normalizedSettings.TriggerRatio
                 ? _triggerFrameCount + 1
                 : 0;
 
@@ -45,7 +45,7 @@ public sealed class AlertStateMachine
         }
 
         _triggerFrameCount = 0;
-        _resetFrameCount = nonBlackRatio <= normalizedSettings.ResetRatio
+        _resetFrameCount = mismatchRatio <= normalizedSettings.ResetRatio
             ? _resetFrameCount + 1
             : 0;
 

@@ -3,9 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Color Alert"
         Width="600"
-        Height="690"
+        Height="780"
         MinWidth="540"
-        MinHeight="640"
+        MinHeight="700"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource WindowBackgroundBrush}"
         Loaded="MainWindow_Loaded"
@@ -58,7 +58,7 @@
                            FontSize="28"
                            FontWeight="Bold" />
                 <TextBlock Margin="0,5,0,0"
-                           Text="當指定區域由黑色變成非黑色時，播放一次提示音。"
+                           Text="當指定區域偏離目標顏色時，播放提示音。"
                            Foreground="{StaticResource MutedTextBrush}"
                            FontSize="14" />
             </StackPanel>
@@ -88,7 +88,7 @@
                                    FontWeight="SemiBold" />
                         <TextBlock x:Name="SampleText"
                                    Margin="0,4,0,0"
-                                   Text="目前非黑比例：—"
+                                   Text="目前畫面變化：—"
                                    Foreground="{StaticResource MutedTextBrush}"
                                    FontSize="13" />
                     </StackPanel>
@@ -103,6 +103,7 @@
             <Border Grid.Row="2" Style="{StaticResource CardStyle}">
                 <Grid>
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
@@ -133,6 +134,16 @@
                                Text="可跨螢幕框選；按 Esc 可取消且不會覆蓋原本區域。"
                                Foreground="{StaticResource MutedTextBrush}"
                                FontSize="12" />
+
+                    <CheckBox x:Name="ShowRegionOverlayCheckBox"
+                              Grid.Row="2"
+                              Grid.ColumnSpan="2"
+                              Margin="0,14,0,0"
+                              Content="顯示監看區域"
+                              IsChecked="True"
+                              FontSize="14"
+                              Checked="ShowRegionOverlayCheckBox_Changed"
+                              Unchecked="ShowRegionOverlayCheckBox_Changed" />
                 </Grid>
             </Border>
 
@@ -141,38 +152,40 @@
                     <TextBlock Style="{StaticResource SectionTitleStyle}" Text="偵測設定" />
 
                     <Grid Margin="0,18,0,0">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
 
-                        <TextBlock Grid.Row="0"
-                                   Grid.Column="0"
-                                   Text="黑色容差"
-                                   Foreground="{StaticResource TextBrush}"
-                                   FontSize="14" />
-                        <TextBlock x:Name="ToleranceValueText"
-                                   Grid.Row="0"
-                                   Grid.Column="1"
-                                   Text="12 / 255"
-                                   Foreground="{StaticResource MutedTextBrush}"
-                                   FontSize="13" />
-                        <Slider x:Name="ToleranceSlider"
-                                Grid.Row="1"
-                                Grid.ColumnSpan="2"
-                                Margin="0,7,0,0"
-                                Minimum="0"
-                                Maximum="64"
-                                TickFrequency="1"
-                                IsSnapToTickEnabled="True"
-                                ValueChanged="DetectionSlider_ValueChanged" />
+                        <Border x:Name="TargetColorSwatch"
+                                Grid.Column="0"
+                                Width="40"
+                                Height="40"
+                                Margin="0,0,12,0"
+                                CornerRadius="6"
+                                BorderBrush="#FFD0D5DD"
+                                BorderThickness="1"
+                                Background="Black" />
+
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock Text="目標顏色"
+                                       Foreground="{StaticResource TextBrush}"
+                                       FontSize="14" />
+                            <TextBlock x:Name="TargetColorText"
+                                       Margin="0,3,0,0"
+                                       Text="#000000"
+                                       Foreground="{StaticResource MutedTextBrush}"
+                                       FontSize="13" />
+                        </StackPanel>
+
+                        <Button x:Name="PickColorButton"
+                                Grid.Column="2"
+                                Content="從畫面取色"
+                                Click="PickColorButton_Click" />
                     </Grid>
 
-                    <Grid Margin="0,18,0,0">
+                    <Grid Margin="0,20,0,0">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
@@ -184,28 +197,59 @@
 
                         <TextBlock Grid.Row="0"
                                    Grid.Column="0"
-                                   Text="非黑像素觸發比例"
+                                   Text="敏感度"
                                    Foreground="{StaticResource TextBrush}"
                                    FontSize="14" />
-                        <TextBlock x:Name="RatioValueText"
+                        <TextBlock x:Name="SensitivityValueText"
                                    Grid.Row="0"
                                    Grid.Column="1"
-                                   Text="1.0%"
+                                   Text="標準"
                                    Foreground="{StaticResource MutedTextBrush}"
                                    FontSize="13" />
-                        <Slider x:Name="RatioSlider"
+                        <Slider x:Name="SensitivitySlider"
                                 Grid.Row="1"
                                 Grid.ColumnSpan="2"
                                 Margin="0,7,0,0"
-                                Minimum="0.1"
-                                Maximum="20"
-                                TickFrequency="0.1"
+                                Minimum="1"
+                                Maximum="100"
+                                Value="50"
+                                TickFrequency="1"
                                 IsSnapToTickEnabled="True"
-                                ValueChanged="DetectionSlider_ValueChanged" />
+                                ValueChanged="SensitivitySlider_ValueChanged" />
+                    </Grid>
+
+                    <Grid Margin="0,20,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Column="0"
+                                   Margin="0,0,18,0"
+                                   VerticalAlignment="Center"
+                                   Text="提示音次數"
+                                   Foreground="{StaticResource TextBrush}"
+                                   FontSize="14" />
+
+                        <RadioButton x:Name="OneSoundRadioButton"
+                                     Grid.Column="1"
+                                     Margin="0,0,18,0"
+                                     VerticalAlignment="Center"
+                                     GroupName="AlertCount"
+                                     Content="一聲"
+                                     IsChecked="True"
+                                     Checked="AlertModeRadioButton_Checked" />
+                        <RadioButton x:Name="ThreeSoundsRadioButton"
+                                     Grid.Column="2"
+                                     VerticalAlignment="Center"
+                                     GroupName="AlertCount"
+                                     Content="連響三聲"
+                                     Checked="AlertModeRadioButton_Checked" />
                     </Grid>
 
                     <TextBlock Margin="0,14,0,0"
-                               Text="必須連續 3 次達標才會提示；恢復黑色後才會重新待命。"
+                               Text="敏感度越高，越小的顏色或範圍變化也會觸發。必須連續 3 次達標才會提示。"
                                TextWrapping="Wrap"
                                Foreground="{StaticResource MutedTextBrush}"
                                FontSize="12" />
@@ -239,7 +283,7 @@
                 <TextBlock Grid.Row="1"
                            Grid.ColumnSpan="3"
                            Margin="0,15,0,0"
-                           Text="最小化後程式會留在系統匣。關閉視窗則會結束程式。"
+                           Text="最小化或關閉視窗後仍會留在系統匣；請從系統匣選單退出。"
                            HorizontalAlignment="Center"
                            Foreground="{StaticResource MutedTextBrush}"
                            FontSize="12" />

@@ -24,7 +24,13 @@ internal static partial class NativeMethods
     internal static readonly nint HwndTopmost = new(-1);
 
     internal const uint SwpNoOwnerZOrder = 0x0200;
+    internal const uint SwpNoActivate = 0x0010;
     internal const uint SwpShowWindow = 0x0040;
+
+    internal const int GwlExStyle = -20;
+    internal const nint WsExTransparent = 0x00000020;
+    internal const nint WsExToolWindow = 0x00000080;
+    internal const nint WsExNoActivate = 0x08000000;
 
     [LibraryImport("user32.dll")]
     internal static partial int GetSystemMetrics(int index);
@@ -95,6 +101,12 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool SetForegroundWindow(nint windowHandle);
 
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
+    internal static partial nint GetWindowLongPtr(nint windowHandle, int index);
+
+    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    internal static partial nint SetWindowLongPtr(nint windowHandle, int index, nint newValue);
+
     [LibraryImport("wtsapi32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool WTSRegisterSessionNotification(nint windowHandle, int flags);
@@ -133,4 +145,3 @@ internal static partial class NativeMethods
         internal uint Colors;
     }
 }
-

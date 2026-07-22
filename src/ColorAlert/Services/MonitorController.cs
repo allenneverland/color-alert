@@ -22,6 +22,7 @@ internal sealed class MonitorController : IAsyncDisposable
     private CancellationTokenSource? _monitorCancellation;
     private Task? _monitorTask;
     private DetectionSettings _settings = new();
+    private AlertRepeatMode _alertMode = AlertRepeatMode.Once;
     private MonitorStatus _status = MonitorStatus.Idle;
     private bool _disposed;
 
@@ -67,11 +68,20 @@ internal sealed class MonitorController : IAsyncDisposable
         }
     }
 
+    internal void UpdateAlertMode(AlertRepeatMode alertMode)
+    {
+        lock (_stateLock)
+        {
+            _alertMode = Enum.IsDefined(alertMode) ? alertMode : AlertRepeatMode.Once;
+        }
+    }
+
     internal void ResetDetection() => _stateMachine.Reset();
 
     internal async Task StartAsync(
         ScreenRegion region,
         DetectionSettings settings,
+        AlertRepeatMode alertMode,
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -90,6 +100,7 @@ internal sealed class MonitorController : IAsyncDisposable
             lock (_stateLock)
             {
                 _settings = settings.Normalize();
+                _alertMode = Enum.IsDefined(alertMode) ? alertMode : AlertRepeatMode.Once;
                 _monitorCancellation = monitorCancellation;
                 _monitorTask = Task.Run(
                     () => MonitorLoopAsync(region, monitorCancellation.Token),
@@ -97,6 +108,31 @@ internal sealed class MonitorController : IAsyncDisposable
             }
 
             SetStatus(_stateMachine.IsAlerted ? MonitorStatus.Alerted : MonitorStatus.Monitoring);
+        }
+        finally
+        {
+            _lifecycleGate.Release();
+        }
+    }
+
+    internal async Task<RgbColor> PickColorAtAsync(
+        int x,
+        int y,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await _lifecycleGate.WaitAsync(cancellationToken);
+
+        try
+        {
+            if (IsRunning)
+            {
+                throw new InvalidOperationException("取色前必須先暫停監看。");
+            }
+
+            return await Task.Run(
+                () => _screenSampler.SampleColorAt(x, y),
+                cancellationToken);
         }
         finally
         {
@@ -157,24 +193,29 @@ internal sealed class MonitorController : IAsyncDisposable
             while (!cancellationToken.IsCancellationRequested)
             {
                 DetectionSettings currentSettings;
+                AlertRepeatMode currentAlertMode;
                 lock (_stateLock)
                 {
                     currentSettings = _settings;
+                    currentAlertMode = _alertMode;
                 }
 
                 try
                 {
-                    var statistics = _screenSampler.Sample(region, currentSettings.BlackTolerance);
+                    var statistics = _screenSampler.Sample(
+                        region,
+                        currentSettings.TargetColor,
+                        currentSettings.ColorTolerance);
                     Sampled?.Invoke(this, statistics);
 
                     var transition = _stateMachine.Observe(
-                        statistics.NonBlackRatio,
+                        statistics.MismatchRatio,
                         currentSettings);
 
                     switch (transition)
                     {
                         case AlertTransition.Triggered:
-                            _alertPlayer.Play();
+                            await _alertPlayer.PlayAsync(currentAlertMode, cancellationToken);
                             SetStatus(MonitorStatus.Alerted);
                             break;
 

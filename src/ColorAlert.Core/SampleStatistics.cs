@@ -1,9 +1,8 @@
 namespace ColorAlert.Core;
 
-public readonly record struct SampleStatistics(int SampleCount, int NonBlackCount)
+public readonly record struct SampleStatistics(int SampleCount, int MismatchCount)
 {
-    public double NonBlackRatio => SampleCount > 0
-        ? (double)NonBlackCount / SampleCount
+    public double MismatchRatio => SampleCount > 0
+        ? (double)MismatchCount / SampleCount
         : 0d;
 }
-

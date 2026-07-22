@@ -7,12 +7,12 @@ public sealed class AlertStateMachineTests
 {
     private static readonly DetectionSettings Settings = new()
     {
-        TriggerRatio = 0.01,
+        Sensitivity = 50,
         StableFrameCount = 3,
     };
 
     [TestMethod]
-    public void BelowThresholdDoesNotTrigger()
+    public void SmallMismatchDoesNotTrigger()
     {
         var detector = new AlertStateMachine();
 
@@ -23,7 +23,7 @@ public sealed class AlertStateMachineTests
     }
 
     [TestMethod]
-    public void StableNonBlackFramesTriggerOnlyOnce()
+    public void StableMismatchFramesTriggerOnlyOnce()
     {
         var detector = new AlertStateMachine();
 
@@ -35,7 +35,7 @@ public sealed class AlertStateMachineTests
     }
 
     [TestMethod]
-    public void StableBlackFramesRearmForNextAlert()
+    public void StableMatchingFramesRearmForNextAlert()
     {
         var detector = new AlertStateMachine();
         _ = detector.Observe(0.02, Settings);
@@ -50,5 +50,20 @@ public sealed class AlertStateMachineTests
         Assert.AreEqual(AlertTransition.None, detector.Observe(0.02, Settings));
         Assert.AreEqual(AlertTransition.None, detector.Observe(0.02, Settings));
         Assert.AreEqual(AlertTransition.Triggered, detector.Observe(0.02, Settings));
+    }
+
+    [TestMethod]
+    [DataRow(1, 64, 0.20)]
+    [DataRow(50, 12, 0.01)]
+    [DataRow(100, 2, 0.001)]
+    public void SensitivityMapsToExpectedThresholds(
+        int sensitivity,
+        int expectedTolerance,
+        double expectedRatio)
+    {
+        var thresholds = DetectionSettings.GetThresholds(sensitivity);
+
+        Assert.AreEqual(expectedTolerance, thresholds.ColorTolerance);
+        Assert.AreEqual(expectedRatio, thresholds.TriggerRatio, 0.000_001);
     }
 }

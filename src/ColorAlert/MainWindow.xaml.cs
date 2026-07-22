@@ -21,6 +21,7 @@ public partial class MainWindow : Window
 {
     private readonly SettingsStore _settingsStore = new();
     private readonly SystemAlertPlayer _alertPlayer = new();
+    private readonly RegionOutlineOverlay _regionOutlineOverlay = new();
     private readonly DispatcherTimer _saveTimer;
     private readonly Forms.NotifyIcon _notifyIcon;
     private readonly Forms.ContextMenuStrip _trayMenu;
@@ -36,6 +37,8 @@ public partial class MainWindow : Window
     private bool _uiReady;
     private bool _updatingControls;
     private bool _regionInvalid;
+    private bool _exitRequested;
+    private bool _trayHintShown;
     private bool _shutdownStarted;
     private bool _shutdownComplete;
 
@@ -59,11 +62,7 @@ public partial class MainWindow : Window
         _trayPauseItem.Click += (_, _) => Dispatch(PauseMonitoringAsync);
         selectItem.Click += (_, _) => Dispatch(SelectRegionAsync);
         showItem.Click += (_, _) => RestoreFromTray();
-        exitItem.Click += (_, _) => Dispatch(() =>
-        {
-            Close();
-            return Task.CompletedTask;
-        });
+        exitItem.Click += (_, _) => Dispatch(RequestExitAsync);
 
         _trayMenu = new Forms.ContextMenuStrip();
         _trayMenu.Items.AddRange([
@@ -111,6 +110,8 @@ public partial class MainWindow : Window
             _ = NativeMethods.SetForegroundWindow(handle);
         }
     }
+
+    internal void AllowSystemExit() => _exitRequested = true;
 
     protected override void OnSourceInitialized(EventArgs e)
     {
@@ -167,13 +168,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        ShowInTaskbar = false;
-        Hide();
-        _notifyIcon.ShowBalloonTip(
-            timeout: 2_000,
-            tipTitle: "Color Alert 仍在執行",
-            tipText: "可從系統匣暫停、重新選區或退出。",
-            tipIcon: Forms.ToolTipIcon.Info);
+        HideToTray();
     }
 
     private async void MainWindow_Closing(object? sender, CancelEventArgs e)
@@ -184,6 +179,12 @@ public partial class MainWindow : Window
         }
 
         e.Cancel = true;
+        if (!_exitRequested)
+        {
+            HideToTray();
+            return;
+        }
+
         if (_shutdownStarted)
         {
             return;
@@ -204,10 +205,25 @@ public partial class MainWindow : Window
     private async void SelectRegionButton_Click(object sender, RoutedEventArgs e) =>
         await SelectRegionAsync();
 
-    private void TestSoundButton_Click(object sender, RoutedEventArgs e) =>
-        _alertPlayer.Play();
+    private async void PickColorButton_Click(object sender, RoutedEventArgs e) =>
+        await PickTargetColorAsync();
 
-    private void DetectionSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    private async void TestSoundButton_Click(object sender, RoutedEventArgs e)
+    {
+        TestSoundButton.IsEnabled = false;
+        try
+        {
+            await _alertPlayer.PlayAsync(_settings.AlertMode);
+        }
+        finally
+        {
+            TestSoundButton.IsEnabled = true;
+        }
+    }
+
+    private void SensitivitySlider_ValueChanged(
+        object sender,
+        RoutedPropertyChangedEventArgs<double> e)
     {
         if (!_uiReady || _updatingControls)
         {
@@ -216,13 +232,42 @@ public partial class MainWindow : Window
 
         var detection = _settings.Detection with
         {
-            BlackTolerance = (int)Math.Round(ToleranceSlider.Value),
-            TriggerRatio = RatioSlider.Value / 100d,
+            Sensitivity = (int)Math.Round(SensitivitySlider.Value),
         };
 
         _settings = _settings with { Detection = detection.Normalize() };
         _monitorController?.UpdateSettings(_settings.Detection);
-        UpdateDetectionLabels();
+        UpdateDetectionDisplay();
+        ScheduleSave();
+    }
+
+    private void ShowRegionOverlayCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!_uiReady || _updatingControls)
+        {
+            return;
+        }
+
+        _settings = _settings with
+        {
+            ShowRegionOverlay = ShowRegionOverlayCheckBox.IsChecked == true,
+        };
+        UpdateRegionOutline();
+        ScheduleSave();
+    }
+
+    private void AlertModeRadioButton_Checked(object sender, RoutedEventArgs e)
+    {
+        if (!_uiReady || _updatingControls)
+        {
+            return;
+        }
+
+        var alertMode = ThreeSoundsRadioButton.IsChecked == true
+            ? AlertRepeatMode.ThreeTimes
+            : AlertRepeatMode.Once;
+        _settings = _settings with { AlertMode = alertMode };
+        _monitorController?.UpdateAlertMode(alertMode);
         ScheduleSave();
     }
 
@@ -262,7 +307,10 @@ public partial class MainWindow : Window
         try
         {
             _regionInvalid = false;
-            await _monitorController.StartAsync(region, _settings.Detection);
+            await _monitorController.StartAsync(
+                region,
+                _settings.Detection,
+                _settings.AlertMode);
             await PersistSettingsAsync(showError: false);
         }
         catch (Exception exception)
@@ -301,6 +349,7 @@ public partial class MainWindow : Window
             await _monitorController.PauseAsync();
         }
 
+        _regionOutlineOverlay.Hide();
         Hide();
         ShowInTaskbar = false;
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
@@ -325,6 +374,7 @@ public partial class MainWindow : Window
         finally
         {
             RestoreFromTray();
+            UpdateRegionOutline();
         }
 
         if (selectedRegion is { IsValid: true } region)
@@ -333,15 +383,80 @@ public partial class MainWindow : Window
             _regionInvalid = false;
             _monitorController.ResetDetection();
             UpdateRegionText();
+            UpdateRegionOutline();
             ApplyStatus(MonitorStatus.Paused);
-            SampleText.Text = "目前非黑比例：—";
+            SampleText.Text = "目前畫面變化：—";
             await PersistSettingsAsync(showError: true);
             return;
         }
 
-        if (shouldResumeOnCancel && _settings.Region is { IsValid: true } previousRegion)
+        if (shouldResumeOnCancel)
         {
-            await _monitorController.StartAsync(previousRegion, _settings.Detection);
+            await StartMonitoringAsync();
+        }
+    }
+
+    private async Task PickTargetColorAsync()
+    {
+        if (_monitorController is null)
+        {
+            return;
+        }
+
+        var shouldResume = _monitorController.IsRunning;
+        if (shouldResume)
+        {
+            await _monitorController.PauseAsync();
+        }
+
+        _regionOutlineOverlay.Hide();
+        Hide();
+        ShowInTaskbar = false;
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+
+        (int X, int Y)? selectedPoint = null;
+        try
+        {
+            var picker = new ColorPickerWindow();
+            if (picker.ShowDialog() == true)
+            {
+                selectedPoint = picker.SelectedPoint;
+            }
+
+            if (selectedPoint is { } point)
+            {
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+                await Task.Delay(75);
+
+                var targetColor = await _monitorController.PickColorAtAsync(point.X, point.Y);
+                _settings = _settings with
+                {
+                    Detection = _settings.Detection with { TargetColor = targetColor },
+                };
+                _monitorController.UpdateSettings(_settings.Detection);
+                _monitorController.ResetDetection();
+                UpdateDetectionDisplay();
+                SampleText.Text = "目前畫面變化：—";
+                await PersistSettingsAsync(showError: true);
+            }
+        }
+        catch (Exception exception)
+        {
+            System.Windows.MessageBox.Show(
+                $"無法從畫面取得顏色：\n\n{exception.Message}",
+                "取色失敗",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            RestoreFromTray();
+            UpdateRegionOutline();
+        }
+
+        if (shouldResume)
+        {
+            await StartMonitoringAsync();
         }
     }
 
@@ -357,7 +472,7 @@ public partial class MainWindow : Window
     private void MonitorController_Sampled(object? sender, SampleStatistics statistics)
     {
         _ = Dispatcher.BeginInvoke(
-            () => SampleText.Text = $"目前非黑比例：{statistics.NonBlackRatio:P2}",
+            () => SampleText.Text = $"目前畫面變化：{statistics.MismatchRatio:P2}",
             DispatcherPriority.Background);
     }
 
@@ -366,22 +481,36 @@ public partial class MainWindow : Window
         _updatingControls = true;
         try
         {
-            ToleranceSlider.Value = _settings.Detection.BlackTolerance;
-            RatioSlider.Value = _settings.Detection.TriggerRatio * 100d;
+            SensitivitySlider.Value = _settings.Detection.Sensitivity;
+            ShowRegionOverlayCheckBox.IsChecked = _settings.ShowRegionOverlay;
+            OneSoundRadioButton.IsChecked = _settings.AlertMode == AlertRepeatMode.Once;
+            ThreeSoundsRadioButton.IsChecked = _settings.AlertMode == AlertRepeatMode.ThreeTimes;
         }
         finally
         {
             _updatingControls = false;
         }
 
-        UpdateDetectionLabels();
+        _monitorController?.UpdateSettings(_settings.Detection);
+        _monitorController?.UpdateAlertMode(_settings.AlertMode);
+        UpdateDetectionDisplay();
         UpdateRegionText();
     }
 
-    private void UpdateDetectionLabels()
+    private void UpdateDetectionDisplay()
     {
-        ToleranceValueText.Text = $"{_settings.Detection.BlackTolerance} / 255";
-        RatioValueText.Text = $"{_settings.Detection.TriggerRatio:P1}";
+        var targetColor = _settings.Detection.TargetColor;
+        TargetColorText.Text = targetColor.ToHex();
+        TargetColorSwatch.Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(
+            targetColor.Red,
+            targetColor.Green,
+            targetColor.Blue));
+        SensitivityValueText.Text = _settings.Detection.Sensitivity switch
+        {
+            <= 33 => "低",
+            <= 66 => "標準",
+            _ => "高",
+        };
     }
 
     private void UpdateRegionText()
@@ -400,8 +529,8 @@ public partial class MainWindow : Window
     {
         var (text, color) = status switch
         {
-            MonitorStatus.Monitoring => ("監看中 — 等待非黑畫面", System.Windows.Media.Color.FromRgb(18, 183, 106)),
-            MonitorStatus.Alerted => ("已提示 — 等待恢復黑色", System.Windows.Media.Color.FromRgb(247, 144, 9)),
+            MonitorStatus.Monitoring => ("監看中 — 等待畫面變化", System.Windows.Media.Color.FromRgb(18, 183, 106)),
+            MonitorStatus.Alerted => ("已提示 — 等待恢復目標顏色", System.Windows.Media.Color.FromRgb(247, 144, 9)),
             MonitorStatus.Paused => ("已暫停", System.Windows.Media.Color.FromRgb(102, 112, 133)),
             MonitorStatus.Error => ($"擷取錯誤 — {errorMessage ?? "稍後重試"}", System.Windows.Media.Color.FromRgb(240, 68, 56)),
             _ => ("尚未開始", System.Windows.Media.Color.FromRgb(152, 162, 179)),
@@ -430,6 +559,7 @@ public partial class MainWindow : Window
         _regionInvalid = _settings.Region is { IsValid: true } region &&
             !DisplayService.IsAvailable(region);
         UpdateRegionText();
+        UpdateRegionOutline();
     }
 
     private async Task HandleDisplayChangeAsync()
@@ -480,7 +610,10 @@ public partial class MainWindow : Window
 
         if (_settings.Region is { IsValid: true } region && DisplayService.IsAvailable(region))
         {
-            await _monitorController.StartAsync(region, _settings.Detection);
+            await _monitorController.StartAsync(
+                region,
+                _settings.Detection,
+                _settings.AlertMode);
         }
     }
 
@@ -509,6 +642,45 @@ public partial class MainWindow : Window
         }
 
         return nint.Zero;
+    }
+
+    private void UpdateRegionOutline()
+    {
+        if (_settings.ShowRegionOverlay &&
+            !_regionInvalid &&
+            _settings.Region is { IsValid: true } region)
+        {
+            _regionOutlineOverlay.Show(region);
+        }
+        else
+        {
+            _regionOutlineOverlay.Hide();
+        }
+    }
+
+    private void HideToTray()
+    {
+        ShowInTaskbar = false;
+        Hide();
+
+        if (_trayHintShown)
+        {
+            return;
+        }
+
+        _trayHintShown = true;
+        _notifyIcon.ShowBalloonTip(
+            timeout: 2_000,
+            tipTitle: "Color Alert 仍在執行",
+            tipText: "可從系統匣暫停、重新選區或退出。",
+            tipIcon: Forms.ToolTipIcon.Info);
+    }
+
+    private Task RequestExitAsync()
+    {
+        _exitRequested = true;
+        Close();
+        return Task.CompletedTask;
     }
 
     private void ScheduleSave()
@@ -560,6 +732,7 @@ public partial class MainWindow : Window
         }
         finally
         {
+            _regionOutlineOverlay.Dispose();
             var handle = new WindowInteropHelper(this).Handle;
             if (_sessionNotificationRegistered && handle != nint.Zero)
             {

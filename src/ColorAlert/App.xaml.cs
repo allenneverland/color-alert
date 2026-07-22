@@ -78,6 +78,16 @@ public partial class App : System.Windows.Application
         base.OnExit(e);
     }
 
+    protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        if (MainWindow is MainWindow mainWindow)
+        {
+            mainWindow.AllowSystemExit();
+        }
+
+        base.OnSessionEnding(e);
+    }
+
     private void RestoreMainWindow()
     {
         if (MainWindow is MainWindow mainWindow)
