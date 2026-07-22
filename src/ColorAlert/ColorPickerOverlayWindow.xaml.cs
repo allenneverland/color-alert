@@ -8,6 +8,10 @@ using System.Windows.Threading;
 using ColorAlert.Core;
 using ColorAlert.Interop;
 using ColorAlert.Services;
+using MediaBrushes = System.Windows.Media.Brushes;
+using MediaColor = System.Windows.Media.Color;
+using WindowsPoint = System.Windows.Point;
+using WindowsSize = System.Windows.Size;
 
 namespace ColorAlert;
 
@@ -112,7 +116,9 @@ public partial class ColorPickerOverlayWindow : Window
             PixelGrid.Children.Add(new Border
             {
                 Background = brush,
-                BorderBrush = index == centerIndex ? Brushes.White : Brushes.Transparent,
+                BorderBrush = index == centerIndex
+                    ? MediaBrushes.White
+                    : MediaBrushes.Transparent,
                 BorderThickness = index == centerIndex ? new Thickness(2) : new Thickness(0),
             });
         }
@@ -131,7 +137,10 @@ public partial class ColorPickerOverlayWindow : Window
             for (var index = 0; index < colors.Length; index++)
             {
                 var color = colors[index];
-                _pixelBrushes[index].Color = Color.FromRgb(color.Red, color.Green, color.Blue);
+                _pixelBrushes[index].Color = MediaColor.FromRgb(
+                    color.Red,
+                    color.Green,
+                    color.Blue);
             }
 
             PreviewHexText.Text = colors[colors.Length / 2].ToHex();
@@ -160,10 +169,12 @@ public partial class ColorPickerOverlayWindow : Window
         }
 
         var fromDevice = _windowSource.CompositionTarget.TransformFromDevice;
-        var cursor = fromDevice.Transform(new Point(
+        var cursor = fromDevice.Transform(new WindowsPoint(
             point.X - _virtualBounds.X,
             point.Y - _virtualBounds.Y));
-        PreviewPanel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        PreviewPanel.Measure(new WindowsSize(
+            double.PositiveInfinity,
+            double.PositiveInfinity));
         var panelSize = PreviewPanel.DesiredSize;
 
         var left = cursor.X + PreviewOffset;
