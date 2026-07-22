@@ -17,6 +17,10 @@ public sealed record DetectionSettings
 
     public int AreaSensitivity { get; init; } = DefaultAreaSensitivity;
 
+    public RgbColor PrimaryTargetColor { get; init; } = TargetColorDefaults.Primary;
+
+    public RgbColor SecondaryTargetColor { get; init; } = TargetColorDefaults.Secondary;
+
     public int SensitivityScaleVersion { get; init; }
 
     public int SampleIntervalMilliseconds { get; init; } = DefaultSampleIntervalMilliseconds;

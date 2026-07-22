@@ -45,6 +45,8 @@ internal sealed class GdiScreenSampler : IDisposable
 
     internal TargetColorStatistics SampleTargetColors(
         ScreenRegion region,
+        RgbColor primaryTargetColor,
+        RgbColor secondaryTargetColor,
         int colorTolerance)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -61,28 +63,26 @@ internal sealed class GdiScreenSampler : IDisposable
         Marshal.Copy(_bits, _pixelBuffer, 0, _pixelBuffer.Length);
 
         var normalizedTolerance = Math.Clamp(colorTolerance, 0, 255);
-        var yellow = MonitoredColorPalette.GetRgb(MonitoredColor.Yellow);
-        var blue = MonitoredColorPalette.GetRgb(MonitoredColor.Blue);
-        var yellowCount = 0;
-        var blueCount = 0;
+        var primaryCount = 0;
+        var secondaryCount = 0;
 
         for (var sourceOffset = 0; sourceOffset < _pixelBuffer.Length; sourceOffset += BytesPerPixel)
         {
-            if (MatchesColor(sourceOffset, yellow, normalizedTolerance))
+            if (MatchesColor(sourceOffset, primaryTargetColor, normalizedTolerance))
             {
-                yellowCount++;
+                primaryCount++;
             }
 
-            if (MatchesColor(sourceOffset, blue, normalizedTolerance))
+            if (MatchesColor(sourceOffset, secondaryTargetColor, normalizedTolerance))
             {
-                blueCount++;
+                secondaryCount++;
             }
         }
 
         return new TargetColorStatistics(
             targetWidth * targetHeight,
-            yellowCount,
-            blueCount);
+            primaryCount,
+            secondaryCount);
     }
 
     public void Dispose()

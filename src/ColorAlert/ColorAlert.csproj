@@ -17,4 +17,10 @@
   <ItemGroup>
     <ProjectReference Include="../ColorAlert.Core/ColorAlert.Core.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="Assets/AlertSiren.wav" />
+    <EmbeddedResource Include="Assets/AlertSiren.wav"
+                      LogicalName="ColorAlert.Assets.AlertSiren.wav" />
+  </ItemGroup>
 </Project>

@@ -50,6 +50,7 @@ public partial class MainWindow : Window
     private MonitorStatus _lastDisplayedStatus = MonitorStatus.Idle;
     private string? _lastStatusError;
     private CancellationTokenSource? _locatorCancellation;
+    private CancellationTokenSource? _testSoundCancellation;
 
     public MainWindow()
     {
@@ -214,6 +215,12 @@ public partial class MainWindow : Window
     private async void AddRegionButton_Click(object sender, RoutedEventArgs e) =>
         await AddRegionAsync();
 
+    private async void PickPrimaryColorButton_Click(object sender, RoutedEventArgs e) =>
+        await PickTargetColorAsync(MonitoredColor.Primary);
+
+    private async void PickSecondaryColorButton_Click(object sender, RoutedEventArgs e) =>
+        await PickTargetColorAsync(MonitoredColor.Secondary);
+
     private async void LocateRegionButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is Button { Tag: Guid regionId })
@@ -240,14 +247,34 @@ public partial class MainWindow : Window
 
     private async void TestSoundButton_Click(object sender, RoutedEventArgs e)
     {
+        using var cancellation = new CancellationTokenSource();
+        _testSoundCancellation = cancellation;
         TestSoundButton.IsEnabled = false;
+
         try
         {
-            await _alertPlayer.PlayAsync(_settings.AlertMode);
+            await _alertPlayer.PlayAsync(_settings.AlertMode, cancellation.Token);
+        }
+        catch (OperationCanceledException) when (
+            cancellation.IsCancellationRequested || _shutdownStarted)
+        {
+            // Expected when monitoring is paused or the application exits.
+        }
+        catch (ObjectDisposedException) when (_shutdownStarted)
+        {
+            // The alert player has already been released during shutdown.
         }
         finally
         {
-            TestSoundButton.IsEnabled = true;
+            if (ReferenceEquals(_testSoundCancellation, cancellation))
+            {
+                _testSoundCancellation = null;
+            }
+
+            if (!_shutdownStarted)
+            {
+                TestSoundButton.IsEnabled = true;
+            }
         }
     }
 
@@ -385,6 +412,8 @@ public partial class MainWindow : Window
 
     private async Task PauseMonitoringAsync()
     {
+        await CancelTestSoundAsync();
+
         if (_monitorController is null || !_monitorController.IsRunning)
         {
             return;
@@ -397,6 +426,15 @@ public partial class MainWindow : Window
         catch (ObjectDisposedException)
         {
             // The application is already shutting down.
+        }
+    }
+
+    private async Task CancelTestSoundAsync()
+    {
+        var cancellation = _testSoundCancellation;
+        if (cancellation is not null && !cancellation.IsCancellationRequested)
+        {
+            await cancellation.CancelAsync();
         }
     }
 
@@ -683,6 +721,80 @@ public partial class MainWindow : Window
         }
     }
 
+    private async Task PickTargetColorAsync(MonitoredColor target)
+    {
+        if (_monitorController is null || _regionOperationInProgress)
+        {
+            return;
+        }
+
+        var shouldResume = _monitorController.IsRunning;
+        SetRegionOperationInProgress(true);
+        try
+        {
+            if (shouldResume)
+            {
+                await _monitorController.PauseAsync();
+            }
+
+            var selectedColor = await SelectScreenColorAsync();
+            if (selectedColor is not { } color)
+            {
+                return;
+            }
+
+            var currentColor = target == MonitoredColor.Primary
+                ? _settings.Detection.PrimaryTargetColor
+                : _settings.Detection.SecondaryTargetColor;
+            if (color == currentColor)
+            {
+                return;
+            }
+
+            var otherColor = target == MonitoredColor.Primary
+                ? _settings.Detection.SecondaryTargetColor
+                : _settings.Detection.PrimaryTargetColor;
+            if (color == otherColor)
+            {
+                System.Windows.MessageBox.Show(
+                    this,
+                    "顏色 1 與顏色 2 不能完全相同，請選擇另一個像素。",
+                    "顏色重複",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            var detection = target == MonitoredColor.Primary
+                ? _settings.Detection with { PrimaryTargetColor = color }
+                : _settings.Detection with { SecondaryTargetColor = color };
+            _settings = _settings with { Detection = detection.Normalize() };
+            _monitorController.UpdateSettings(_settings.Detection);
+            _monitorController.ResetDetections(target);
+            UpdateDetectionDisplay();
+            await PersistSettingsAsync(showError: true);
+        }
+        catch (Exception exception) when (
+            exception is Win32Exception or InvalidOperationException)
+        {
+            RestoreFromTray();
+            System.Windows.MessageBox.Show(
+                this,
+                $"無法從畫面取得顏色：\n\n{exception.Message}",
+                "取色失敗",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            SetRegionOperationInProgress(false);
+            if (shouldResume)
+            {
+                await StartMonitoringAsync();
+            }
+        }
+    }
+
     private async Task<ScreenRegion?> SelectRegionAsync()
     {
         _suppressRegionOutline = true;
@@ -698,6 +810,34 @@ public partial class MainWindow : Window
                 overlay.SelectedRegion is { IsValid: true } region
                 ? region
                 : null;
+        }
+        finally
+        {
+            _suppressRegionOutline = false;
+            RestoreFromTray();
+            UpdateRegionOutline();
+        }
+    }
+
+    private async Task<RgbColor?> SelectScreenColorAsync()
+    {
+        _suppressRegionOutline = true;
+        _regionOutlineOverlay.Hide();
+        Hide();
+        ShowInTaskbar = false;
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+
+        try
+        {
+            var overlay = new ColorPickerOverlayWindow();
+            if (overlay.ShowDialog() != true || overlay.SelectedPoint is not { } point)
+            {
+                return null;
+            }
+
+            await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+            await Task.Delay(50);
+            return ScreenPixelSampler.SamplePixel(point.X, point.Y);
         }
         finally
         {
@@ -742,10 +882,10 @@ public partial class MainWindow : Window
         _regionStates[e.RegionId] = new RegionDisplayState
         {
             Status = status,
-            YellowRatio = e.YellowRatio,
-            BlueRatio = e.BlueRatio,
-            YellowPresent = e.YellowPresent,
-            BluePresent = e.BluePresent,
+            PrimaryRatio = e.PrimaryRatio,
+            SecondaryRatio = e.SecondaryRatio,
+            PrimaryPresent = e.PrimaryPresent,
+            SecondaryPresent = e.SecondaryPresent,
             ErrorMessage = e.ErrorMessage,
         };
         UpdateRegionRow(e.RegionId);
@@ -781,10 +921,28 @@ public partial class MainWindow : Window
 
     private void UpdateDetectionDisplay()
     {
+        UpdateColorPreview(
+            PrimaryColorSwatch,
+            PrimaryColorHexText,
+            _settings.Detection.PrimaryTargetColor);
+        UpdateColorPreview(
+            SecondaryColorSwatch,
+            SecondaryColorHexText,
+            _settings.Detection.SecondaryTargetColor);
         ColorSensitivityValueText.Text = FormatSensitivity(
             _settings.Detection.ColorSensitivity);
         AreaSensitivityValueText.Text = FormatSensitivity(
             _settings.Detection.AreaSensitivity);
+    }
+
+    private static void UpdateColorPreview(
+        Border swatch,
+        TextBlock hexText,
+        RgbColor color)
+    {
+        swatch.Background = new SolidColorBrush(
+            System.Windows.Media.Color.FromRgb(color.Red, color.Green, color.Blue));
+        hexText.Text = color.ToHex();
     }
 
     private static string FormatSensitivity(int sensitivity) => sensitivity switch
@@ -987,16 +1145,16 @@ public partial class MainWindow : Window
             .Select(region => _regionStates.GetValueOrDefault(region.Id))
             .Where(state => state is not null)
             .ToArray();
-        var maximumYellow = states.Length == 0
+        var maximumPrimary = states.Length == 0
             ? 0d
-            : states.Max(state => state!.YellowRatio);
-        var maximumBlue = states.Length == 0
+            : states.Max(state => state!.PrimaryRatio);
+        var maximumSecondary = states.Length == 0
             ? 0d
-            : states.Max(state => state!.BlueRatio);
+            : states.Max(state => state!.SecondaryRatio);
         var alertedCount = states.Count(state => state!.Status == RegionMonitorStatus.Alerted);
         SampleText.Text = alertedCount > 0
-            ? $"監看 {_settings.Regions.Length} 個區域 · {alertedCount} 個偵測到目標色 · 黃 {maximumYellow:P2} · 藍 {maximumBlue:P2}"
-            : $"監看 {_settings.Regions.Length} 個區域 · 黃 {maximumYellow:P2} · 藍 {maximumBlue:P2}";
+            ? $"監看 {_settings.Regions.Length} 個區域 · {alertedCount} 個偵測到目標色 · 顏色 1 {maximumPrimary:P2} · 顏色 2 {maximumSecondary:P2}"
+            : $"監看 {_settings.Regions.Length} 個區域 · 顏色 1 {maximumPrimary:P2} · 顏色 2 {maximumSecondary:P2}";
     }
 
     private void ApplyStatus(MonitorStatus status, string? errorMessage = null)
@@ -1005,7 +1163,7 @@ public partial class MainWindow : Window
         _lastStatusError = errorMessage;
         var (text, color) = status switch
         {
-            MonitorStatus.Monitoring => ("監看中 — 等待黃色或藍色", System.Windows.Media.Color.FromRgb(18, 183, 106)),
+            MonitorStatus.Monitoring => ("監看中 — 等待顏色 1 或顏色 2", System.Windows.Media.Color.FromRgb(18, 183, 106)),
             MonitorStatus.Alerted => ("已偵測到目標色 — 持續監看新增面積", System.Windows.Media.Color.FromRgb(247, 144, 9)),
             MonitorStatus.Paused => ("已暫停", System.Windows.Media.Color.FromRgb(102, 112, 133)),
             MonitorStatus.Error => ($"部分區域擷取錯誤 — {errorMessage ?? "稍後重試"}", System.Windows.Media.Color.FromRgb(240, 68, 56)),
@@ -1169,6 +1327,8 @@ public partial class MainWindow : Window
         _regionOperationInProgress = isInProgress;
         AddRegionButton.IsEnabled = !isInProgress &&
             _settings.Regions.Length < AppSettings.MaximumRegionCount;
+        PickPrimaryColorButton.IsEnabled = !isInProgress;
+        PickSecondaryColorButton.IsEnabled = !isInProgress;
         ApplyStatus(_lastDisplayedStatus, _lastStatusError);
         RenderRegionList();
     }
@@ -1183,15 +1343,15 @@ public partial class MainWindow : Window
 
     private static string FormatColorRatios(RegionDisplayState state)
     {
-        var detected = (state.YellowPresent, state.BluePresent) switch
+        var detected = (state.PrimaryPresent, state.SecondaryPresent) switch
         {
-            (true, true) => " · 已偵測：黃色、藍色",
-            (true, false) => " · 已偵測：黃色",
-            (false, true) => " · 已偵測：藍色",
+            (true, true) => " · 已偵測：顏色 1、顏色 2",
+            (true, false) => " · 已偵測：顏色 1",
+            (false, true) => " · 已偵測：顏色 2",
             _ => string.Empty,
         };
 
-        return $"黃色 {state.YellowRatio:P2} · 藍色 {state.BlueRatio:P2}{detected}";
+        return $"顏色 1 {state.PrimaryRatio:P2} · 顏色 2 {state.SecondaryRatio:P2}{detected}";
     }
 
     private void HideToTray()
@@ -1260,6 +1420,8 @@ public partial class MainWindow : Window
             await _locatorCancellation.CancelAsync();
         }
 
+        await CancelTestSoundAsync();
+
         try
         {
             await PersistSettingsAsync(showError: false);
@@ -1272,18 +1434,25 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _regionOutlineOverlay.Dispose();
-            var handle = new WindowInteropHelper(this).Handle;
-            if (_sessionNotificationRegistered && handle != nint.Zero)
+            try
             {
-                _ = NativeMethods.WTSUnRegisterSessionNotification(handle);
+                await _alertPlayer.DisposeAsync();
             }
+            finally
+            {
+                _regionOutlineOverlay.Dispose();
+                var handle = new WindowInteropHelper(this).Handle;
+                if (_sessionNotificationRegistered && handle != nint.Zero)
+                {
+                    _ = NativeMethods.WTSUnRegisterSessionNotification(handle);
+                }
 
-            _windowSource?.RemoveHook(WindowMessageHook);
-            _settingsStore.Dispose();
-            _notifyIcon.Visible = false;
-            _notifyIcon.Dispose();
-            _trayMenu.Dispose();
+                _windowSource?.RemoveHook(WindowMessageHook);
+                _settingsStore.Dispose();
+                _notifyIcon.Visible = false;
+                _notifyIcon.Dispose();
+                _trayMenu.Dispose();
+            }
         }
     }
 
@@ -1310,13 +1479,13 @@ public partial class MainWindow : Window
     {
         internal RegionMonitorStatus Status { get; set; } = RegionMonitorStatus.Monitoring;
 
-        internal double YellowRatio { get; set; }
+        internal double PrimaryRatio { get; set; }
 
-        internal double BlueRatio { get; set; }
+        internal double SecondaryRatio { get; set; }
 
-        internal bool YellowPresent { get; set; }
+        internal bool PrimaryPresent { get; set; }
 
-        internal bool BluePresent { get; set; }
+        internal bool SecondaryPresent { get; set; }
 
         internal string? ErrorMessage { get; set; }
     }

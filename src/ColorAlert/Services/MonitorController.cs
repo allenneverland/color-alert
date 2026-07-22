@@ -14,23 +14,23 @@ internal sealed class MonitorStatusChangedEventArgs(
 internal sealed class RegionStatusChangedEventArgs(
     Guid regionId,
     RegionMonitorStatus status,
-    double yellowRatio,
-    double blueRatio,
-    bool yellowPresent,
-    bool bluePresent,
+    double primaryRatio,
+    double secondaryRatio,
+    bool primaryPresent,
+    bool secondaryPresent,
     string? errorMessage = null) : EventArgs
 {
     internal Guid RegionId { get; } = regionId;
 
     internal RegionMonitorStatus Status { get; } = status;
 
-    internal double YellowRatio { get; } = yellowRatio;
+    internal double PrimaryRatio { get; } = primaryRatio;
 
-    internal double BlueRatio { get; } = blueRatio;
+    internal double SecondaryRatio { get; } = secondaryRatio;
 
-    internal bool YellowPresent { get; } = yellowPresent;
+    internal bool PrimaryPresent { get; } = primaryPresent;
 
-    internal bool BluePresent { get; } = bluePresent;
+    internal bool SecondaryPresent { get; } = secondaryPresent;
 
     internal string? ErrorMessage { get; } = errorMessage;
 }
@@ -174,6 +174,25 @@ internal sealed class MonitorController : IAsyncDisposable
         RaiseRegionChanges(changes);
     }
 
+    internal void ResetDetections(MonitoredColor color)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        List<RegionStatusChangedEventArgs> changes = [];
+
+        lock (_stateLock)
+        {
+            EnsureStopped();
+            _coordinator.Reset(color);
+            foreach (var runtime in _regions.Values)
+            {
+                ResetRuntime(runtime, color);
+                changes.Add(CreateEventArgs(runtime));
+            }
+        }
+
+        RaiseRegionChanges(changes);
+    }
+
     internal async Task StartAsync(
         IReadOnlyList<MonitoredRegionDefinition> definitions,
         DetectionSettings settings,
@@ -294,6 +313,8 @@ internal sealed class MonitorController : IAsyncDisposable
                     {
                         var statistics = _screenSampler.SampleTargetColors(
                             snapshot.Definition.Bounds,
+                            currentSettings.PrimaryTargetColor,
+                            currentSettings.SecondaryTargetColor,
                             currentSettings.ColorTolerance);
                         samples.Add(new RegionSample(snapshot.Definition.Id, statistics));
                     }
@@ -318,12 +339,12 @@ internal sealed class MonitorController : IAsyncDisposable
                 {
                     new TargetObservation(
                         sample.RegionId,
-                        MonitoredColor.Yellow,
-                        sample.Statistics.YellowRatio),
+                        MonitoredColor.Primary,
+                        sample.Statistics.PrimaryRatio),
                     new TargetObservation(
                         sample.RegionId,
-                        MonitoredColor.Blue,
-                        sample.Statistics.BlueRatio),
+                        MonitoredColor.Secondary,
+                        sample.Statistics.SecondaryRatio),
                 });
 
                 MultiRegionAlertResult alertResult;
@@ -338,15 +359,15 @@ internal sealed class MonitorController : IAsyncDisposable
                             continue;
                         }
 
-                        runtime.YellowRatio = sample.Statistics.YellowRatio;
-                        runtime.BlueRatio = sample.Statistics.BlueRatio;
-                        runtime.YellowPresent = _coordinator.IsPresent(
+                        runtime.PrimaryRatio = sample.Statistics.PrimaryRatio;
+                        runtime.SecondaryRatio = sample.Statistics.SecondaryRatio;
+                        runtime.PrimaryPresent = _coordinator.IsPresent(
                             sample.RegionId,
-                            MonitoredColor.Yellow);
-                        runtime.BluePresent = _coordinator.IsPresent(
+                            MonitoredColor.Primary);
+                        runtime.SecondaryPresent = _coordinator.IsPresent(
                             sample.RegionId,
-                            MonitoredColor.Blue);
-                        runtime.Status = runtime.YellowPresent || runtime.BluePresent
+                            MonitoredColor.Secondary);
+                        runtime.Status = runtime.PrimaryPresent || runtime.SecondaryPresent
                             ? RegionMonitorStatus.Alerted
                             : RegionMonitorStatus.Monitoring;
                         runtime.ErrorMessage = null;
@@ -440,7 +461,7 @@ internal sealed class MonitorController : IAsyncDisposable
     {
         if (_monitorTask is { IsCompleted: false })
         {
-            throw new InvalidOperationException("變更監看區域前必須先暫停監看。");
+            throw new InvalidOperationException("變更監看設定前必須先暫停監看。");
         }
     }
 
@@ -456,11 +477,34 @@ internal sealed class MonitorController : IAsyncDisposable
 
     private static void ResetRuntime(RegionRuntime runtime)
     {
-        runtime.YellowRatio = 0d;
-        runtime.BlueRatio = 0d;
-        runtime.YellowPresent = false;
-        runtime.BluePresent = false;
+        runtime.PrimaryRatio = 0d;
+        runtime.SecondaryRatio = 0d;
+        runtime.PrimaryPresent = false;
+        runtime.SecondaryPresent = false;
         runtime.Status = RegionMonitorStatus.Monitoring;
+        runtime.ErrorMessage = null;
+        runtime.RetryAfterUtc = DateTimeOffset.MinValue;
+    }
+
+    private static void ResetRuntime(RegionRuntime runtime, MonitoredColor color)
+    {
+        switch (color)
+        {
+            case MonitoredColor.Primary:
+                runtime.PrimaryRatio = 0d;
+                runtime.PrimaryPresent = false;
+                break;
+            case MonitoredColor.Secondary:
+                runtime.SecondaryRatio = 0d;
+                runtime.SecondaryPresent = false;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(color), color, null);
+        }
+
+        runtime.Status = runtime.PrimaryPresent || runtime.SecondaryPresent
+            ? RegionMonitorStatus.Alerted
+            : RegionMonitorStatus.Monitoring;
         runtime.ErrorMessage = null;
         runtime.RetryAfterUtc = DateTimeOffset.MinValue;
     }
@@ -469,10 +513,10 @@ internal sealed class MonitorController : IAsyncDisposable
         new(
             runtime.Definition.Id,
             runtime.Status,
-            runtime.YellowRatio,
-            runtime.BlueRatio,
-            runtime.YellowPresent,
-            runtime.BluePresent,
+            runtime.PrimaryRatio,
+            runtime.SecondaryRatio,
+            runtime.PrimaryPresent,
+            runtime.SecondaryPresent,
             runtime.ErrorMessage);
 
     private void RaiseRegionChanges(IEnumerable<RegionStatusChangedEventArgs> changes)
@@ -489,13 +533,13 @@ internal sealed class MonitorController : IAsyncDisposable
 
         internal RegionMonitorStatus Status { get; set; } = RegionMonitorStatus.Monitoring;
 
-        internal double YellowRatio { get; set; }
+        internal double PrimaryRatio { get; set; }
 
-        internal double BlueRatio { get; set; }
+        internal double SecondaryRatio { get; set; }
 
-        internal bool YellowPresent { get; set; }
+        internal bool PrimaryPresent { get; set; }
 
-        internal bool BluePresent { get; set; }
+        internal bool SecondaryPresent { get; set; }
 
         internal string? ErrorMessage { get; set; }
 

@@ -1,0 +1,61 @@
+<Window x:Class="ColorAlert.ColorPickerOverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="從畫面取色"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        Topmost="True"
+        Cursor="Cross"
+        WindowStartupLocation="Manual"
+        PreviewMouseMove="Overlay_MouseMove"
+        PreviewMouseLeftButtonDown="Overlay_MouseLeftButtonDown"
+        PreviewKeyDown="Overlay_KeyDown">
+    <Grid x:Name="OverlayRoot" Background="Transparent">
+        <Canvas IsHitTestVisible="False">
+            <Border x:Name="PreviewPanel"
+                    Padding="8"
+                    CornerRadius="8"
+                    BorderBrush="White"
+                    BorderThickness="1"
+                    Background="#F0172033">
+                <StackPanel>
+                    <UniformGrid x:Name="PixelGrid"
+                                 Width="132"
+                                 Height="132"
+                                 Rows="11"
+                                 Columns="11" />
+                    <TextBlock x:Name="PreviewHexText"
+                               Margin="0,7,0,0"
+                               Foreground="White"
+                               FontSize="14"
+                               FontWeight="SemiBold"
+                               HorizontalAlignment="Center" />
+                </StackPanel>
+            </Border>
+        </Canvas>
+
+        <Border HorizontalAlignment="Center"
+                VerticalAlignment="Top"
+                Margin="0,28,0,0"
+                Padding="18,12"
+                CornerRadius="8"
+                Background="#E6172033"
+                IsHitTestVisible="False">
+            <StackPanel>
+                <TextBlock Text="移到目標像素後按一下取色"
+                           Foreground="White"
+                           FontSize="16"
+                           FontWeight="SemiBold"
+                           HorizontalAlignment="Center" />
+                <TextBlock Text="放大格中央是實際取色位置；按 Esc 取消"
+                           Margin="0,4,0,0"
+                           Foreground="#FFD0D5DD"
+                           FontSize="13"
+                           HorizontalAlignment="Center" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

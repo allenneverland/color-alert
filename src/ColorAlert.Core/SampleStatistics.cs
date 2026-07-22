@@ -2,17 +2,17 @@ namespace ColorAlert.Core;
 
 public readonly record struct TargetColorStatistics(
     int SampleCount,
-    int YellowCount,
-    int BlueCount)
+    int PrimaryCount,
+    int SecondaryCount)
 {
-    public double YellowRatio => GetRatio(YellowCount);
+    public double PrimaryRatio => GetRatio(PrimaryCount);
 
-    public double BlueRatio => GetRatio(BlueCount);
+    public double SecondaryRatio => GetRatio(SecondaryCount);
 
     public double GetRatio(MonitoredColor color) => color switch
     {
-        MonitoredColor.Yellow => YellowRatio,
-        MonitoredColor.Blue => BlueRatio,
+        MonitoredColor.Primary => PrimaryRatio,
+        MonitoredColor.Secondary => SecondaryRatio,
         _ => throw new ArgumentOutOfRangeException(nameof(color), color, null),
     };
 

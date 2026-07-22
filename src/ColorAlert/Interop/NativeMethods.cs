@@ -14,6 +14,7 @@ internal static partial class NativeMethods
     internal const uint BiRgb = 0;
     internal const uint SourceCopy = 0x00CC0020;
     internal const uint CaptureLayeredWindows = 0x40000000;
+    internal const uint InvalidColor = 0xFFFFFFFF;
 
     internal const int WmDisplayChange = 0x007E;
     internal const int WmWtsSessionChange = 0x02B1;
@@ -66,6 +67,9 @@ internal static partial class NativeMethods
 
     [LibraryImport("gdi32.dll")]
     internal static partial int SetStretchBltMode(nint deviceContext, int stretchMode);
+
+    [LibraryImport("gdi32.dll", SetLastError = true)]
+    internal static partial uint GetPixel(nint deviceContext, int x, int y);
 
     [LibraryImport("gdi32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

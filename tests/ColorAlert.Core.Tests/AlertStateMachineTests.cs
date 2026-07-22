@@ -87,6 +87,16 @@ public sealed class TargetAreaStateMachineTests
     public void DefaultsAndPreviousSensitivityScaleMigrateOnce()
     {
         var defaults = new AppSettings().Normalize();
+        var customPrimary = new RgbColor(0x11, 0x22, 0x33);
+        var customSecondary = new RgbColor(0x44, 0x55, 0x66);
+        var customSettings = new AppSettings
+        {
+            Detection = DetectionSettings.CreateDefault() with
+            {
+                PrimaryTargetColor = customPrimary,
+                SecondaryTargetColor = customSecondary,
+            },
+        }.Normalize();
         var previousSettings = JsonSerializer.Deserialize<AppSettings>(
             """{"Detection":{"ColorSensitivity":100,"AreaSensitivity":100}}""")!
             .Normalize();
@@ -97,12 +107,19 @@ public sealed class TargetAreaStateMachineTests
 
         Assert.AreEqual(50, defaults.Detection.ColorSensitivity);
         Assert.AreEqual(50, defaults.Detection.AreaSensitivity);
+        Assert.AreEqual(TargetColorDefaults.Primary, defaults.Detection.PrimaryTargetColor);
+        Assert.AreEqual(TargetColorDefaults.Secondary, defaults.Detection.SecondaryTargetColor);
         Assert.AreEqual(50, previousSettings.Detection.ColorSensitivity);
         Assert.AreEqual(50, previousSettings.Detection.AreaSensitivity);
         Assert.AreEqual(50, legacySettings.Detection.ColorSensitivity);
         Assert.AreEqual(50, legacySettings.Detection.AreaSensitivity);
         Assert.AreEqual(50, normalizedAgain.Detection.ColorSensitivity);
         Assert.AreEqual(50, normalizedAgain.Detection.AreaSensitivity);
+
+        var customRoundTrip = JsonSerializer.Deserialize<AppSettings>(
+            JsonSerializer.Serialize(customSettings))!.Normalize();
+        Assert.AreEqual(customPrimary, customRoundTrip.Detection.PrimaryTargetColor);
+        Assert.AreEqual(customSecondary, customRoundTrip.Detection.SecondaryTargetColor);
 
         using var document = JsonDocument.Parse(JsonSerializer.Serialize(previousSettings));
         var detection = document.RootElement.GetProperty(nameof(AppSettings.Detection));
@@ -125,8 +142,8 @@ public sealed class TargetAreaStateMachineTests
 
         var simultaneous = coordinator.Observe(
             [
-                new TargetObservation(firstRegionId, MonitoredColor.Yellow, 0.0002),
-                new TargetObservation(secondRegionId, MonitoredColor.Blue, 0.0002),
+                new TargetObservation(firstRegionId, MonitoredColor.Primary, 0.0002),
+                new TargetObservation(secondRegionId, MonitoredColor.Secondary, 0.0002),
             ],
             immediateSettings);
 
@@ -135,20 +152,33 @@ public sealed class TargetAreaStateMachineTests
 
         var unchanged = coordinator.Observe(
             [
-                new TargetObservation(firstRegionId, MonitoredColor.Yellow, 0.0002),
-                new TargetObservation(secondRegionId, MonitoredColor.Blue, 0.0002),
+                new TargetObservation(firstRegionId, MonitoredColor.Primary, 0.0002),
+                new TargetObservation(secondRegionId, MonitoredColor.Secondary, 0.0002),
             ],
             immediateSettings);
         Assert.IsFalse(unchanged.ShouldAlert);
 
-        var newBlue = coordinator.Observe(
-            [new TargetObservation(firstRegionId, MonitoredColor.Blue, 0.0002)],
+        var newSecondary = coordinator.Observe(
+            [new TargetObservation(firstRegionId, MonitoredColor.Secondary, 0.0002)],
             immediateSettings);
-        Assert.IsTrue(newBlue.ShouldAlert);
+        Assert.IsTrue(newSecondary.ShouldAlert);
 
-        var moreYellow = coordinator.Observe(
-            [new TargetObservation(firstRegionId, MonitoredColor.Yellow, 0.00031)],
+        var morePrimary = coordinator.Observe(
+            [new TargetObservation(firstRegionId, MonitoredColor.Primary, 0.00031)],
             immediateSettings);
-        Assert.IsTrue(moreYellow.ShouldAlert);
+        Assert.IsTrue(morePrimary.ShouldAlert);
+
+        coordinator.Reset(MonitoredColor.Primary);
+        var afterPrimaryReset = coordinator.Observe(
+            [
+                new TargetObservation(firstRegionId, MonitoredColor.Primary, 0.0002),
+                new TargetObservation(firstRegionId, MonitoredColor.Secondary, 0.0002),
+            ],
+            immediateSettings);
+        Assert.IsTrue(afterPrimaryReset.ShouldAlert);
+        Assert.AreEqual(
+            AlertTransition.None,
+            afterPrimaryReset.Targets.Single(result =>
+                result.Color == MonitoredColor.Secondary).Transition);
     }
 }

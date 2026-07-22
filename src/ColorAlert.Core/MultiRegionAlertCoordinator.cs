@@ -90,6 +90,22 @@ public sealed class MultiRegionAlertCoordinator
         }
     }
 
+    public void Reset(MonitoredColor color)
+    {
+        if (!Enum.IsDefined(color))
+        {
+            throw new ArgumentOutOfRangeException(nameof(color), color, null);
+        }
+
+        foreach (var (key, stateMachine) in _stateMachines)
+        {
+            if (key.Color == color)
+            {
+                stateMachine.Reset();
+            }
+        }
+    }
+
     public void ResetAll()
     {
         foreach (var stateMachine in _stateMachines.Values)
