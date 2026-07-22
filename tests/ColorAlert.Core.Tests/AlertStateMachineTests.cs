@@ -3,7 +3,7 @@ using ColorAlert.Core;
 namespace ColorAlert.Core.Tests;
 
 [TestClass]
-public sealed class AlertStateMachineTests
+public sealed class TargetAreaStateMachineTests
 {
     private static readonly DetectionSettings Settings = new()
     {
@@ -12,50 +12,59 @@ public sealed class AlertStateMachineTests
     };
 
     [TestMethod]
-    public void SmallMismatchDoesNotTrigger()
+    public void AreaBelowMinimumDoesNotTrigger()
     {
-        var detector = new AlertStateMachine();
+        var detector = new TargetAreaStateMachine();
 
         Assert.AreEqual(AlertTransition.None, detector.Observe(0.009, Settings));
         Assert.AreEqual(AlertTransition.None, detector.Observe(0.009, Settings));
         Assert.AreEqual(AlertTransition.None, detector.Observe(0.009, Settings));
-        Assert.IsFalse(detector.IsAlerted);
+        Assert.IsFalse(detector.IsPresent);
     }
 
     [TestMethod]
-    public void StableMismatchFramesTriggerOnlyOnce()
+    public void StableAreaIncreaseTriggersWithoutRepeatingSameArea()
     {
-        var detector = new AlertStateMachine();
-
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.01, Settings));
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.02, Settings));
-        Assert.AreEqual(AlertTransition.Triggered, detector.Observe(0.01, Settings));
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.50, Settings));
-        Assert.IsTrue(detector.IsAlerted);
-    }
-
-    [TestMethod]
-    public void StableMatchingFramesRearmForNextAlert()
-    {
-        var detector = new AlertStateMachine();
-        _ = detector.Observe(0.02, Settings);
-        _ = detector.Observe(0.02, Settings);
-        _ = detector.Observe(0.02, Settings);
-
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.005, Settings));
-        Assert.AreEqual(AlertTransition.None, detector.Observe(0.004, Settings));
-        Assert.AreEqual(AlertTransition.Rearmed, detector.Observe(0.005, Settings));
-        Assert.IsFalse(detector.IsAlerted);
+        var detector = new TargetAreaStateMachine();
 
         Assert.AreEqual(AlertTransition.None, detector.Observe(0.02, Settings));
         Assert.AreEqual(AlertTransition.None, detector.Observe(0.02, Settings));
         Assert.AreEqual(AlertTransition.Triggered, detector.Observe(0.02, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.02, Settings));
+        Assert.IsTrue(detector.IsPresent);
+
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.031, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.031, Settings));
+        Assert.AreEqual(AlertTransition.Triggered, detector.Observe(0.031, Settings));
     }
 
     [TestMethod]
-    [DataRow(1, 64, 0.20)]
+    public void StableDecreaseRebasesAndCompleteDisappearanceClears()
+    {
+        var detector = new TargetAreaStateMachine();
+        _ = detector.Observe(0.02, Settings);
+        _ = detector.Observe(0.02, Settings);
+        _ = detector.Observe(0.02, Settings);
+
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.014, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.014, Settings));
+        Assert.AreEqual(AlertTransition.Rebased, detector.Observe(0.014, Settings));
+        Assert.IsTrue(detector.IsPresent);
+
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.025, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.025, Settings));
+        Assert.AreEqual(AlertTransition.Triggered, detector.Observe(0.025, Settings));
+
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.004, Settings));
+        Assert.AreEqual(AlertTransition.None, detector.Observe(0.004, Settings));
+        Assert.AreEqual(AlertTransition.Cleared, detector.Observe(0.004, Settings));
+        Assert.IsFalse(detector.IsPresent);
+    }
+
+    [TestMethod]
+    [DataRow(1, 2, 0.20)]
     [DataRow(50, 12, 0.01)]
-    [DataRow(100, 2, 0.001)]
+    [DataRow(100, 24, 0.001)]
     public void SensitivityMapsToExpectedThresholds(
         int sensitivity,
         int expectedTolerance,
@@ -63,45 +72,45 @@ public sealed class AlertStateMachineTests
     {
         var thresholds = DetectionSettings.GetThresholds(sensitivity);
 
-        Assert.AreEqual(expectedTolerance, thresholds.PixelDifferenceTolerance);
-        Assert.AreEqual(expectedRatio, thresholds.ChangedPixelRatio, 0.000_001);
+        Assert.AreEqual(expectedTolerance, thresholds.ColorTolerance);
+        Assert.AreEqual(expectedRatio, thresholds.TargetPixelRatio, 0.000_001);
     }
 
     [TestMethod]
-    public void MultipleRegionsCoalesceEachCycleAndKeepIndependentState()
+    public void MultipleTargetsCoalesceEachCycleAndRemainIndependent()
     {
         var firstRegionId = Guid.NewGuid();
         var secondRegionId = Guid.NewGuid();
-        var laterRegionId = Guid.NewGuid();
         var coordinator = new MultiRegionAlertCoordinator();
-        coordinator.Synchronize([firstRegionId, secondRegionId, laterRegionId]);
+        coordinator.Synchronize([firstRegionId, secondRegionId]);
         var immediateSettings = Settings with { StableFrameCount = 1 };
 
         var simultaneous = coordinator.Observe(
             [
-                new RegionObservation(firstRegionId, 0.02),
-                new RegionObservation(secondRegionId, 0.02),
+                new TargetObservation(firstRegionId, MonitoredColor.Yellow, 0.02),
+                new TargetObservation(secondRegionId, MonitoredColor.Blue, 0.02),
             ],
             immediateSettings);
 
         Assert.IsTrue(simultaneous.ShouldAlert);
-        Assert.AreEqual(2, simultaneous.Regions.Count);
-        Assert.IsTrue(simultaneous.Regions.All(region =>
-            region.Transition == AlertTransition.Triggered));
+        Assert.AreEqual(2, simultaneous.Targets.Count);
 
-        var later = coordinator.Observe(
-            [new RegionObservation(laterRegionId, 0.02)],
+        var unchanged = coordinator.Observe(
+            [
+                new TargetObservation(firstRegionId, MonitoredColor.Yellow, 0.02),
+                new TargetObservation(secondRegionId, MonitoredColor.Blue, 0.02),
+            ],
             immediateSettings);
-        Assert.IsTrue(later.ShouldAlert);
+        Assert.IsFalse(unchanged.ShouldAlert);
 
-        var rearmed = coordinator.Observe(
-            [new RegionObservation(firstRegionId, 0d)],
+        var newBlue = coordinator.Observe(
+            [new TargetObservation(firstRegionId, MonitoredColor.Blue, 0.02)],
             immediateSettings);
-        Assert.AreEqual(AlertTransition.Rearmed, rearmed.Regions[0].Transition);
+        Assert.IsTrue(newBlue.ShouldAlert);
 
-        var triggeredAgain = coordinator.Observe(
-            [new RegionObservation(firstRegionId, 0.02)],
+        var moreYellow = coordinator.Observe(
+            [new TargetObservation(firstRegionId, MonitoredColor.Yellow, 0.031)],
             immediateSettings);
-        Assert.IsTrue(triggeredAgain.ShouldAlert);
+        Assert.IsTrue(moreYellow.ShouldAlert);
     }
 }

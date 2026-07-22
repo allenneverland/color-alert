@@ -64,7 +64,7 @@
                            FontSize="28"
                            FontWeight="Bold" />
                 <TextBlock Margin="0,5,0,0"
-                           Text="當任一監看區域與匡選時的畫面不同時，播放提示音。"
+                           Text="當監看區域出現指定黃色或藍色，或同色面積增加時播放提示音。"
                            Foreground="{StaticResource MutedTextBrush}"
                            FontSize="14" />
             </StackPanel>
@@ -146,7 +146,7 @@
                     <TextBlock Grid.Row="2"
                                Grid.ColumnSpan="2"
                                Margin="0,14,0,0"
-                               Text="新增或重新選取時會保存當下畫面作為基準；基準只留在記憶體中。按 Esc 可取消。"
+                               Text="可跨螢幕框選；按 Esc 可取消且不會覆蓋原本區域。"
                                TextWrapping="Wrap"
                                Foreground="{StaticResource MutedTextBrush}"
                                FontSize="12" />
@@ -155,7 +155,7 @@
                               Grid.Row="3"
                               Grid.ColumnSpan="2"
                               Margin="0,14,0,0"
-                              Content="顯示所有監看區域（橘色表示已觸發）"
+                              Content="顯示所有監看區域（橘色表示偵測到目標色）"
                               IsChecked="True"
                               FontSize="14"
                               Checked="ShowRegionOverlayCheckBox_Changed"
@@ -166,6 +166,64 @@
             <Border Grid.Row="3" Style="{StaticResource CardStyle}">
                 <StackPanel>
                     <TextBlock Style="{StaticResource SectionTitleStyle}" Text="偵測設定" />
+
+                    <Grid Margin="0,18,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="16" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0"
+                                Padding="12"
+                                CornerRadius="8"
+                                BorderBrush="#FFE4E7EC"
+                                BorderThickness="1">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="34"
+                                        Height="34"
+                                        Margin="0,0,10,0"
+                                        CornerRadius="5"
+                                        BorderBrush="#FFD0D5DD"
+                                        BorderThickness="1"
+                                        Background="#FFCEB374" />
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="黃色"
+                                               Foreground="{StaticResource TextBrush}"
+                                               FontWeight="SemiBold" />
+                                    <TextBlock Text="#CEB374"
+                                               Margin="0,2,0,0"
+                                               Foreground="{StaticResource MutedTextBrush}"
+                                               FontSize="12" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Column="2"
+                                Padding="12"
+                                CornerRadius="8"
+                                BorderBrush="#FFE4E7EC"
+                                BorderThickness="1">
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="34"
+                                        Height="34"
+                                        Margin="0,0,10,0"
+                                        CornerRadius="5"
+                                        BorderBrush="#FFD0D5DD"
+                                        BorderThickness="1"
+                                        Background="#FF6088C5" />
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="藍色"
+                                               Foreground="{StaticResource TextBrush}"
+                                               FontWeight="SemiBold" />
+                                    <TextBlock Text="#6088C5"
+                                               Margin="0,2,0,0"
+                                               Foreground="{StaticResource MutedTextBrush}"
+                                               FontSize="12" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
 
                     <Grid Margin="0,18,0,0">
                         <Grid.RowDefinitions>
@@ -231,7 +289,7 @@
                     </Grid>
 
                     <TextBlock Margin="0,14,0,0"
-                               Text="敏感度越高，越小的畫面變化也會觸發。必須連續 3 次達標才會提示。"
+                               Text="敏感度越高，近似色判定越寬鬆，且越小的新增面積也會觸發。必須連續 3 次達標才會提示。"
                                TextWrapping="Wrap"
                                Foreground="{StaticResource MutedTextBrush}"
                                FontSize="12" />

@@ -43,7 +43,9 @@ internal sealed class GdiScreenSampler : IDisposable
         }
     }
 
-    internal ReferenceFrame CaptureReference(ScreenRegion region)
+    internal TargetColorStatistics SampleTargetColors(
+        ScreenRegion region,
+        int colorTolerance)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -58,65 +60,29 @@ internal sealed class GdiScreenSampler : IDisposable
         Capture(region, targetWidth, targetHeight);
         Marshal.Copy(_bits, _pixelBuffer, 0, _pixelBuffer.Length);
 
-        var bgrPixels = new byte[targetWidth * targetHeight * 3];
-        for (var sourceOffset = 0; sourceOffset < _pixelBuffer.Length; sourceOffset += BytesPerPixel)
-        {
-            var targetOffset = (sourceOffset / BytesPerPixel) * 3;
-            bgrPixels[targetOffset] = _pixelBuffer[sourceOffset];
-            bgrPixels[targetOffset + 1] = _pixelBuffer[sourceOffset + 1];
-            bgrPixels[targetOffset + 2] = _pixelBuffer[sourceOffset + 2];
-        }
-
-        return new ReferenceFrame(targetWidth, targetHeight, bgrPixels);
-    }
-
-    internal SampleStatistics Compare(
-        ScreenRegion region,
-        ReferenceFrame referenceFrame,
-        int pixelDifferenceTolerance)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        ArgumentNullException.ThrowIfNull(referenceFrame);
-
-        if (!region.IsValid)
-        {
-            throw new ArgumentException("監看區域無效。", nameof(region));
-        }
-
-        var expectedWidth = Math.Min(region.Width, MaximumSampleDimension);
-        var expectedHeight = Math.Min(region.Height, MaximumSampleDimension);
-        if (referenceFrame.Width != expectedWidth || referenceFrame.Height != expectedHeight)
-        {
-            throw new ArgumentException("基準畫面尺寸與監看區域不一致。", nameof(referenceFrame));
-        }
-
-        EnsureBuffer(referenceFrame.Width, referenceFrame.Height);
-        Capture(region, referenceFrame.Width, referenceFrame.Height);
-        Marshal.Copy(_bits, _pixelBuffer, 0, _pixelBuffer.Length);
-
-        var referencePixels = referenceFrame.BgrPixels.Span;
-        var normalizedTolerance = Math.Clamp(pixelDifferenceTolerance, 0, 255);
-        var mismatchCount = 0;
+        var normalizedTolerance = Math.Clamp(colorTolerance, 0, 255);
+        var yellow = MonitoredColorPalette.GetRgb(MonitoredColor.Yellow);
+        var blue = MonitoredColorPalette.GetRgb(MonitoredColor.Blue);
+        var yellowCount = 0;
+        var blueCount = 0;
 
         for (var sourceOffset = 0; sourceOffset < _pixelBuffer.Length; sourceOffset += BytesPerPixel)
         {
-            var referenceOffset = (sourceOffset / BytesPerPixel) * 3;
-            var blueDifference = Math.Abs(
-                _pixelBuffer[sourceOffset] - referencePixels[referenceOffset]);
-            var greenDifference = Math.Abs(
-                _pixelBuffer[sourceOffset + 1] - referencePixels[referenceOffset + 1]);
-            var redDifference = Math.Abs(
-                _pixelBuffer[sourceOffset + 2] - referencePixels[referenceOffset + 2]);
-
-            if (redDifference > normalizedTolerance ||
-                greenDifference > normalizedTolerance ||
-                blueDifference > normalizedTolerance)
+            if (MatchesColor(sourceOffset, yellow, normalizedTolerance))
             {
-                mismatchCount++;
+                yellowCount++;
+            }
+
+            if (MatchesColor(sourceOffset, blue, normalizedTolerance))
+            {
+                blueCount++;
             }
         }
 
-        return new SampleStatistics(referenceFrame.Width * referenceFrame.Height, mismatchCount);
+        return new TargetColorStatistics(
+            targetWidth * targetHeight,
+            yellowCount,
+            blueCount);
     }
 
     public void Dispose()
@@ -202,6 +168,11 @@ internal sealed class GdiScreenSampler : IDisposable
         _sampleHeight = height;
         _pixelBuffer = new byte[width * height * BytesPerPixel];
     }
+
+    private bool MatchesColor(int offset, RgbColor color, int tolerance) =>
+        Math.Abs(_pixelBuffer[offset] - color.Blue) <= tolerance &&
+        Math.Abs(_pixelBuffer[offset + 1] - color.Green) <= tolerance &&
+        Math.Abs(_pixelBuffer[offset + 2] - color.Red) <= tolerance;
 
     private void Capture(ScreenRegion sourceRegion, int targetWidth, int targetHeight)
     {

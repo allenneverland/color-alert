@@ -127,6 +127,9 @@ public partial class MainWindow : Window
         base.OnSourceInitialized(e);
 
         var handle = new WindowInteropHelper(this).Handle;
+        _ = NativeMethods.SetWindowDisplayAffinity(
+            handle,
+            NativeMethods.WdaExcludeFromCapture);
         _windowSource = HwndSource.FromHwnd(handle);
         _windowSource?.AddHook(WindowMessageHook);
         _sessionNotificationRegistered = NativeMethods.WTSRegisterSessionNotification(
@@ -219,14 +222,6 @@ public partial class MainWindow : Window
         if (sender is Button { Tag: Guid regionId })
         {
             await LocateRegionAsync(regionId);
-        }
-    }
-
-    private async void UpdateBaselineButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is Button { Tag: Guid regionId })
-        {
-            await UpdateBaselineAsync(regionId);
         }
     }
 
@@ -348,11 +343,6 @@ public partial class MainWindow : Window
         {
             SetRegionOperationInProgress(true);
             _monitorController.SynchronizeRegions(_settings.Regions);
-            if (_monitorController.GetMissingReferenceIds().Count > 0)
-            {
-                await CaptureMissingReferencesAsync();
-            }
-
             await _monitorController.StartAsync(
                 _settings.Regions,
                 _settings.Detection,
@@ -517,23 +507,21 @@ public partial class MainWindow : Window
                 await _monitorController.PauseAsync();
             }
 
-            var selectedRegion = await SelectRegionAndCaptureAsync();
-            if (selectedRegion is not { } result)
+            var selectedRegion = await SelectRegionAsync();
+            if (selectedRegion is not { } region)
             {
                 return;
             }
 
-            var definition = new MonitoredRegionDefinition { Bounds = result.Region };
+            var definition = new MonitoredRegionDefinition { Bounds = region };
             _settings = _settings with
             {
                 Regions = [.. _settings.Regions, definition],
             };
             _monitorController.SynchronizeRegions(_settings.Regions);
-            _monitorController.SetReference(definition.Id, result.ReferenceFrame);
             _regionStates[definition.Id] = new RegionDisplayState
             {
                 Status = RegionMonitorStatus.Monitoring,
-                HasReference = true,
             };
             RenderRegionList();
             UpdateRegionOutline();
@@ -580,13 +568,13 @@ public partial class MainWindow : Window
                 await _monitorController.PauseAsync();
             }
 
-            var selectedRegion = await SelectRegionAndCaptureAsync();
-            if (selectedRegion is not { } result)
+            var selectedRegion = await SelectRegionAsync();
+            if (selectedRegion is not { } region)
             {
                 return;
             }
 
-            var replacement = existing with { Bounds = result.Region };
+            var replacement = existing with { Bounds = region };
             _settings = _settings with
             {
                 Regions = _settings.Regions
@@ -594,11 +582,9 @@ public partial class MainWindow : Window
                     .ToArray(),
             };
             _monitorController.SynchronizeRegions(_settings.Regions);
-            _monitorController.SetReference(regionId, result.ReferenceFrame);
             _regionStates[regionId] = new RegionDisplayState
             {
                 Status = RegionMonitorStatus.Monitoring,
-                HasReference = true,
             };
             RenderRegionList();
             UpdateRegionOutline();
@@ -610,63 +596,6 @@ public partial class MainWindow : Window
                 this,
                 $"無法重新選取區域：\n\n{exception.Message}",
                 "選取失敗",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-        }
-        finally
-        {
-            SetRegionOperationInProgress(false);
-            if (shouldResume)
-            {
-                await StartMonitoringAsync();
-            }
-        }
-    }
-
-    private async Task UpdateBaselineAsync(Guid regionId)
-    {
-        if (_monitorController is null || _regionOperationInProgress)
-        {
-            return;
-        }
-
-        var definition = FindRegion(regionId);
-        if (definition is null)
-        {
-            return;
-        }
-
-        var shouldResume = _monitorController.IsRunning;
-        SetRegionOperationInProgress(true);
-        try
-        {
-            if (shouldResume)
-            {
-                await _monitorController.PauseAsync();
-            }
-
-            var wasVisible = PrepareForDesktopCapture();
-            ReferenceFrame referenceFrame;
-            try
-            {
-                await WaitForDesktopRedrawAsync();
-                referenceFrame = await _monitorController.CaptureReferenceAsync(definition.Bounds);
-            }
-            finally
-            {
-                RestoreAfterDesktopCapture(wasVisible);
-            }
-
-            _monitorController.SetReference(regionId, referenceFrame);
-            UpdateRegionOutline();
-        }
-        catch (Exception exception)
-        {
-            RestoreFromTray();
-            System.Windows.MessageBox.Show(
-                this,
-                $"無法更新基準畫面：\n\n{exception.Message}",
-                "更新失敗",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
@@ -737,13 +666,8 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<CapturedRegion?> SelectRegionAndCaptureAsync()
+    private async Task<ScreenRegion?> SelectRegionAsync()
     {
-        if (_monitorController is null)
-        {
-            return null;
-        }
-
         _suppressRegionOutline = true;
         _regionOutlineOverlay.Hide();
         Hide();
@@ -753,14 +677,10 @@ public partial class MainWindow : Window
         try
         {
             var overlay = new SelectionOverlayWindow();
-            if (overlay.ShowDialog() != true || overlay.SelectedRegion is not { IsValid: true } region)
-            {
-                return null;
-            }
-
-            await WaitForDesktopRedrawAsync();
-            var referenceFrame = await _monitorController.CaptureReferenceAsync(region);
-            return new CapturedRegion(region, referenceFrame);
+            return overlay.ShowDialog() == true &&
+                overlay.SelectedRegion is { IsValid: true } region
+                ? region
+                : null;
         }
         finally
         {
@@ -768,62 +688,6 @@ public partial class MainWindow : Window
             RestoreFromTray();
             UpdateRegionOutline();
         }
-    }
-
-    private async Task CaptureMissingReferencesAsync()
-    {
-        if (_monitorController is null)
-        {
-            return;
-        }
-
-        var missingIds = _monitorController.GetMissingReferenceIds().ToHashSet();
-        if (missingIds.Count == 0)
-        {
-            return;
-        }
-
-        var wasVisible = PrepareForDesktopCapture();
-        try
-        {
-            await WaitForDesktopRedrawAsync();
-            foreach (var definition in _settings.Regions.Where(region => missingIds.Contains(region.Id)))
-            {
-                var referenceFrame = await _monitorController.CaptureReferenceAsync(definition.Bounds);
-                _monitorController.SetReference(definition.Id, referenceFrame);
-            }
-        }
-        finally
-        {
-            RestoreAfterDesktopCapture(wasVisible);
-        }
-    }
-
-    private bool PrepareForDesktopCapture()
-    {
-        var wasVisible = IsVisible;
-        _suppressRegionOutline = true;
-        _regionOutlineOverlay.Hide();
-        Hide();
-        ShowInTaskbar = false;
-        return wasVisible;
-    }
-
-    private void RestoreAfterDesktopCapture(bool wasVisible)
-    {
-        _suppressRegionOutline = false;
-        if (wasVisible)
-        {
-            RestoreFromTray();
-        }
-
-        UpdateRegionOutline();
-    }
-
-    private static async Task WaitForDesktopRedrawAsync()
-    {
-        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
-        await Task.Delay(100);
     }
 
     private void MonitorController_StatusChanged(
@@ -861,8 +725,10 @@ public partial class MainWindow : Window
         _regionStates[e.RegionId] = new RegionDisplayState
         {
             Status = status,
-            MismatchRatio = e.MismatchRatio,
-            HasReference = e.HasReference,
+            YellowRatio = e.YellowRatio,
+            BlueRatio = e.BlueRatio,
+            YellowPresent = e.YellowPresent,
+            BluePresent = e.BluePresent,
             ErrorMessage = e.ErrorMessage,
         };
         UpdateRegionRow(e.RegionId);
@@ -913,7 +779,7 @@ public partial class MainWindow : Window
             _regionStates[definition.Id] = new RegionDisplayState
             {
                 Status = DisplayService.IsAvailable(definition.Bounds)
-                    ? RegionMonitorStatus.NeedsBaseline
+                    ? RegionMonitorStatus.Monitoring
                     : RegionMonitorStatus.Invalid,
             };
         }
@@ -1010,13 +876,13 @@ public partial class MainWindow : Window
         var footer = new Grid { Margin = new Thickness(17, 9, 0, 0) };
         footer.ColumnDefinitions.Add(new ColumnDefinition());
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var mismatchText = new TextBlock
+        var colorRatioText = new TextBlock
         {
             VerticalAlignment = VerticalAlignment.Center,
             Foreground = FindBrush("MutedTextBrush"),
             FontSize = 12,
         };
-        footer.Children.Add(mismatchText);
+        footer.Children.Add(colorRatioText);
 
         var actions = new StackPanel
         {
@@ -1027,7 +893,6 @@ public partial class MainWindow : Window
             definition.Id,
             LocateRegionButton_Click,
             DisplayService.IsAvailable(definition.Bounds)));
-        actions.Children.Add(CreateRegionActionButton("更新基準", definition.Id, UpdateBaselineButton_Click));
         actions.Children.Add(CreateRegionActionButton("重新選取", definition.Id, ReselectRegionButton_Click));
         actions.Children.Add(CreateRegionActionButton("刪除", definition.Id, DeleteRegionButton_Click));
         Grid.SetColumn(actions, 1);
@@ -1037,7 +902,7 @@ public partial class MainWindow : Window
         _regionRowControls[definition.Id] = new RegionRowControls(
             indicator,
             statusText,
-            mismatchText);
+            colorRatioText);
         UpdateRegionRow(definition.Id);
         return root;
     }
@@ -1071,20 +936,19 @@ public partial class MainWindow : Window
         var (statusText, color) = state.Status switch
         {
             RegionMonitorStatus.Monitoring => ("待命", System.Windows.Media.Color.FromRgb(18, 183, 106)),
-            RegionMonitorStatus.Alerted => ("已觸發", System.Windows.Media.Color.FromRgb(247, 144, 9)),
+            RegionMonitorStatus.Alerted => ("已偵測", System.Windows.Media.Color.FromRgb(247, 144, 9)),
             RegionMonitorStatus.Error => ("擷取錯誤", System.Windows.Media.Color.FromRgb(240, 68, 56)),
             RegionMonitorStatus.Invalid => ("需要處理", System.Windows.Media.Color.FromRgb(240, 68, 56)),
-            _ => ("待建立基準", System.Windows.Media.Color.FromRgb(102, 112, 133)),
+            _ => ("待命", System.Windows.Media.Color.FromRgb(18, 183, 106)),
         };
 
         controls.Indicator.Background = new SolidColorBrush(color);
         controls.StatusText.Text = statusText;
-        controls.MismatchText.Text = state.Status switch
+        controls.ColorRatioText.Text = state.Status switch
         {
             RegionMonitorStatus.Invalid => "已超出目前顯示器，請重新選取或刪除",
             RegionMonitorStatus.Error => state.ErrorMessage ?? "擷取失敗，稍後會自動重試",
-            RegionMonitorStatus.NeedsBaseline => "下次開始監看時會自動取得基準",
-            _ => $"目前變化：{state.MismatchRatio:P2}",
+            _ => FormatColorRatios(state),
         };
     }
 
@@ -1100,13 +964,16 @@ public partial class MainWindow : Window
             .Select(region => _regionStates.GetValueOrDefault(region.Id))
             .Where(state => state is not null)
             .ToArray();
-        var maximumMismatch = states.Length == 0
+        var maximumYellow = states.Length == 0
             ? 0d
-            : states.Max(state => state!.MismatchRatio);
+            : states.Max(state => state!.YellowRatio);
+        var maximumBlue = states.Length == 0
+            ? 0d
+            : states.Max(state => state!.BlueRatio);
         var alertedCount = states.Count(state => state!.Status == RegionMonitorStatus.Alerted);
         SampleText.Text = alertedCount > 0
-            ? $"監看 {_settings.Regions.Length} 個區域 · {alertedCount} 個已觸發 · 最大變化 {maximumMismatch:P2}"
-            : $"監看 {_settings.Regions.Length} 個區域 · 最大變化 {maximumMismatch:P2}";
+            ? $"監看 {_settings.Regions.Length} 個區域 · {alertedCount} 個偵測到目標色 · 黃 {maximumYellow:P2} · 藍 {maximumBlue:P2}"
+            : $"監看 {_settings.Regions.Length} 個區域 · 黃 {maximumYellow:P2} · 藍 {maximumBlue:P2}";
     }
 
     private void ApplyStatus(MonitorStatus status, string? errorMessage = null)
@@ -1115,8 +982,8 @@ public partial class MainWindow : Window
         _lastStatusError = errorMessage;
         var (text, color) = status switch
         {
-            MonitorStatus.Monitoring => ("監看中 — 等待畫面變化", System.Windows.Media.Color.FromRgb(18, 183, 106)),
-            MonitorStatus.Alerted => ("已提示 — 等待各區域恢復基準畫面", System.Windows.Media.Color.FromRgb(247, 144, 9)),
+            MonitorStatus.Monitoring => ("監看中 — 等待黃色或藍色", System.Windows.Media.Color.FromRgb(18, 183, 106)),
+            MonitorStatus.Alerted => ("已偵測到目標色 — 持續監看新增面積", System.Windows.Media.Color.FromRgb(247, 144, 9)),
             MonitorStatus.Paused => ("已暫停", System.Windows.Media.Color.FromRgb(102, 112, 133)),
             MonitorStatus.Error => ($"部分區域擷取錯誤 — {errorMessage ?? "稍後重試"}", System.Windows.Media.Color.FromRgb(240, 68, 56)),
             _ => ("尚未開始", System.Windows.Media.Color.FromRgb(152, 162, 179)),
@@ -1164,9 +1031,7 @@ public partial class MainWindow : Window
             }
             else if (state.Status == RegionMonitorStatus.Invalid)
             {
-                state.Status = state.HasReference
-                    ? RegionMonitorStatus.Monitoring
-                    : RegionMonitorStatus.NeedsBaseline;
+                state.Status = RegionMonitorStatus.Monitoring;
             }
         }
 
@@ -1186,13 +1051,13 @@ public partial class MainWindow : Window
             await _monitorController.PauseAsync();
         }
 
-        _monitorController.ClearReferences();
+        _monitorController.ResetDetections();
         foreach (var definition in _settings.Regions)
         {
             _regionStates[definition.Id] = new RegionDisplayState
             {
                 Status = DisplayService.IsAvailable(definition.Bounds)
-                    ? RegionMonitorStatus.NeedsBaseline
+                    ? RegionMonitorStatus.Monitoring
                     : RegionMonitorStatus.Invalid,
             };
         }
@@ -1201,7 +1066,7 @@ public partial class MainWindow : Window
         _notifyIcon.ShowBalloonTip(
             3_000,
             "監看已暫停",
-            "顯示器配置已改變；基準已清除，無效區域需要重新選取或刪除。",
+            "顯示器配置已改變；偵測狀態已重設，無效區域需要重新選取或刪除。",
             Forms.ToolTipIcon.Warning);
     }
 
@@ -1272,7 +1137,7 @@ public partial class MainWindow : Window
             definition.Bounds,
             _regionStates.TryGetValue(definition.Id, out var state)
                 ? state.Status
-                : RegionMonitorStatus.NeedsBaseline));
+                : RegionMonitorStatus.Monitoring));
         _regionOutlineOverlay.Show(items);
     }
 
@@ -1292,6 +1157,19 @@ public partial class MainWindow : Window
 
     private static string FormatRegion(ScreenRegion region) =>
         $"X {region.X:N0}, Y {region.Y:N0} · {region.Width:N0} × {region.Height:N0} px";
+
+    private static string FormatColorRatios(RegionDisplayState state)
+    {
+        var detected = (state.YellowPresent, state.BluePresent) switch
+        {
+            (true, true) => " · 已偵測：黃色、藍色",
+            (true, false) => " · 已偵測：黃色",
+            (false, true) => " · 已偵測：藍色",
+            _ => string.Empty,
+        };
+
+        return $"黃色 {state.YellowRatio:P2} · 藍色 {state.BlueRatio:P2}{detected}";
+    }
 
     private void HideToTray()
     {
@@ -1407,11 +1285,15 @@ public partial class MainWindow : Window
 
     private sealed class RegionDisplayState
     {
-        internal RegionMonitorStatus Status { get; set; } = RegionMonitorStatus.NeedsBaseline;
+        internal RegionMonitorStatus Status { get; set; } = RegionMonitorStatus.Monitoring;
 
-        internal double MismatchRatio { get; set; }
+        internal double YellowRatio { get; set; }
 
-        internal bool HasReference { get; set; }
+        internal double BlueRatio { get; set; }
+
+        internal bool YellowPresent { get; set; }
+
+        internal bool BluePresent { get; set; }
 
         internal string? ErrorMessage { get; set; }
     }
@@ -1419,9 +1301,5 @@ public partial class MainWindow : Window
     private sealed record RegionRowControls(
         Border Indicator,
         TextBlock StatusText,
-        TextBlock MismatchText);
-
-    private sealed record CapturedRegion(
-        ScreenRegion Region,
-        ReferenceFrame ReferenceFrame);
+        TextBlock ColorRatioText);
 }

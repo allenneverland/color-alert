@@ -12,11 +12,11 @@ public sealed record DetectionSettings
 
     public int StableFrameCount { get; init; } = DefaultStableFrameCount;
 
-    public int PixelDifferenceTolerance => GetThresholds(Sensitivity).PixelDifferenceTolerance;
+    public int ColorTolerance => GetThresholds(Sensitivity).ColorTolerance;
 
-    public double ChangedPixelRatio => GetThresholds(Sensitivity).ChangedPixelRatio;
+    public double TargetPixelRatio => GetThresholds(Sensitivity).TargetPixelRatio;
 
-    public double ResetRatio => ChangedPixelRatio / 2d;
+    public double DecreaseRatio => TargetPixelRatio / 2d;
 
     public DetectionSettings Normalize() => this with
     {
@@ -31,7 +31,7 @@ public sealed record DetectionSettings
 
         if (normalizedSensitivity == 1)
         {
-            return new SensitivityThresholds(64, 0.20);
+            return new SensitivityThresholds(2, 0.20);
         }
 
         if (normalizedSensitivity == 50)
@@ -41,20 +41,20 @@ public sealed record DetectionSettings
 
         if (normalizedSensitivity == 100)
         {
-            return new SensitivityThresholds(2, 0.001);
+            return new SensitivityThresholds(24, 0.001);
         }
 
         if (normalizedSensitivity < 50)
         {
             var progress = (normalizedSensitivity - 1d) / 49d;
             return new SensitivityThresholds(
-                InterpolateInteger(64, 12, progress),
+                InterpolateInteger(2, 12, progress),
                 Interpolate(0.20, 0.01, progress));
         }
 
         var highProgress = (normalizedSensitivity - 50d) / 50d;
         return new SensitivityThresholds(
-            InterpolateInteger(12, 2, highProgress),
+            InterpolateInteger(12, 24, highProgress),
             Interpolate(0.01, 0.001, highProgress));
     }
 
@@ -66,5 +66,5 @@ public sealed record DetectionSettings
 }
 
 public readonly record struct SensitivityThresholds(
-    int PixelDifferenceTolerance,
-    double ChangedPixelRatio);
+    int ColorTolerance,
+    double TargetPixelRatio);
