@@ -49,6 +49,7 @@ public partial class MainWindow : Window
     private bool _suppressRegionOutline;
     private MonitorStatus _lastDisplayedStatus = MonitorStatus.Idle;
     private string? _lastStatusError;
+    private CancellationTokenSource? _locatorCancellation;
 
     public MainWindow()
     {
@@ -212,6 +213,14 @@ public partial class MainWindow : Window
 
     private async void AddRegionButton_Click(object sender, RoutedEventArgs e) =>
         await AddRegionAsync();
+
+    private async void LocateRegionButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: Guid regionId })
+        {
+            await LocateRegionAsync(regionId);
+        }
+    }
 
     private async void UpdateBaselineButton_Click(object sender, RoutedEventArgs e)
     {
@@ -381,6 +390,102 @@ public partial class MainWindow : Window
         catch (ObjectDisposedException)
         {
             // The application is already shutting down.
+        }
+    }
+
+    private async Task LocateRegionAsync(Guid regionId)
+    {
+        if (_monitorController is null || _regionOperationInProgress)
+        {
+            return;
+        }
+
+        var regionIndex = Array.FindIndex(
+            _settings.Regions,
+            region => region.Id == regionId);
+        if (regionIndex < 0)
+        {
+            return;
+        }
+
+        var definition = _settings.Regions[regionIndex];
+        if (!DisplayService.IsAvailable(definition.Bounds))
+        {
+            ValidateRegions();
+            return;
+        }
+
+        var shouldResume = _monitorController.IsRunning;
+        var wasVisible = IsVisible;
+        var locatorCancellation = new CancellationTokenSource();
+        _locatorCancellation = locatorCancellation;
+        Exception? failure = null;
+
+        SetRegionOperationInProgress(true);
+        try
+        {
+            if (shouldResume)
+            {
+                await _monitorController.PauseAsync(locatorCancellation.Token);
+            }
+
+            _suppressRegionOutline = true;
+            _regionOutlineOverlay.Hide();
+            Hide();
+            ShowInTaskbar = false;
+            await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+            locatorCancellation.Token.ThrowIfCancellationRequested();
+
+            _regionOutlineOverlay.ShowLocator(
+                definition.Bounds,
+                $"區域 {regionIndex + 1}");
+            await Task.Delay(TimeSpan.FromSeconds(2), locatorCancellation.Token);
+        }
+        catch (OperationCanceledException) when (locatorCancellation.IsCancellationRequested)
+        {
+            // Expected when the application exits during the temporary locator display.
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+        finally
+        {
+            _regionOutlineOverlay.Hide();
+            _suppressRegionOutline = false;
+
+            if (ReferenceEquals(_locatorCancellation, locatorCancellation))
+            {
+                _locatorCancellation = null;
+            }
+
+            locatorCancellation.Dispose();
+
+            if (!_shutdownStarted)
+            {
+                if (wasVisible)
+                {
+                    RestoreFromTray();
+                }
+
+                UpdateRegionOutline();
+                SetRegionOperationInProgress(false);
+                if (shouldResume)
+                {
+                    await StartMonitoringAsync();
+                }
+            }
+        }
+
+        if (failure is not null && !_shutdownStarted)
+        {
+            RestoreFromTray();
+            System.Windows.MessageBox.Show(
+                this,
+                $"無法定位監看區域：\n\n{failure.Message}",
+                "定位失敗",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
         }
     }
 
@@ -917,6 +1022,11 @@ public partial class MainWindow : Window
         {
             Orientation = System.Windows.Controls.Orientation.Horizontal,
         };
+        actions.Children.Add(CreateRegionActionButton(
+            "定位",
+            definition.Id,
+            LocateRegionButton_Click,
+            DisplayService.IsAvailable(definition.Bounds)));
         actions.Children.Add(CreateRegionActionButton("更新基準", definition.Id, UpdateBaselineButton_Click));
         actions.Children.Add(CreateRegionActionButton("重新選取", definition.Id, ReselectRegionButton_Click));
         actions.Children.Add(CreateRegionActionButton("刪除", definition.Id, DeleteRegionButton_Click));
@@ -935,14 +1045,15 @@ public partial class MainWindow : Window
     private Button CreateRegionActionButton(
         string text,
         Guid regionId,
-        RoutedEventHandler handler)
+        RoutedEventHandler handler,
+        bool isAvailable = true)
     {
         var button = new Button
         {
             Content = text,
             Tag = regionId,
             Margin = new Thickness(6, 0, 0, 0),
-            IsEnabled = !_regionOperationInProgress,
+            IsEnabled = !_regionOperationInProgress && isAvailable,
             Style = (Style)FindResource("SmallButtonStyle"),
         };
         button.Click += handler;
@@ -1243,6 +1354,10 @@ public partial class MainWindow : Window
     private async Task ShutdownAsync()
     {
         _saveTimer.Stop();
+        if (_locatorCancellation is not null)
+        {
+            await _locatorCancellation.CancelAsync();
+        }
 
         try
         {
