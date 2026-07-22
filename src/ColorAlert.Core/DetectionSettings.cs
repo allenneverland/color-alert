@@ -31,17 +31,17 @@ public sealed record DetectionSettings
 
         if (normalizedSensitivity == 1)
         {
-            return new SensitivityThresholds(2, 0.20);
+            return new SensitivityThresholds(2, 0.02);
         }
 
         if (normalizedSensitivity == 50)
         {
-            return new SensitivityThresholds(12, 0.01);
+            return new SensitivityThresholds(12, 0.001);
         }
 
         if (normalizedSensitivity == 100)
         {
-            return new SensitivityThresholds(24, 0.001);
+            return new SensitivityThresholds(24, 0.0001);
         }
 
         if (normalizedSensitivity < 50)
@@ -49,13 +49,13 @@ public sealed record DetectionSettings
             var progress = (normalizedSensitivity - 1d) / 49d;
             return new SensitivityThresholds(
                 InterpolateInteger(2, 12, progress),
-                Interpolate(0.20, 0.01, progress));
+                Interpolate(0.02, 0.001, progress));
         }
 
         var highProgress = (normalizedSensitivity - 50d) / 50d;
         return new SensitivityThresholds(
             InterpolateInteger(12, 24, highProgress),
-            Interpolate(0.01, 0.001, highProgress));
+            Interpolate(0.001, 0.0001, highProgress));
     }
 
     private static int InterpolateInteger(int start, int end, double progress) =>

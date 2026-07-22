@@ -289,7 +289,7 @@
                     </Grid>
 
                     <TextBlock Margin="0,14,0,0"
-                               Text="敏感度越高，近似色判定越寬鬆，且越小的新增面積也會觸發。必須連續 3 次達標才會提示。"
+                               Text="敏感度越高，近似色判定越寬鬆，且越小的新增面積也會觸發。選區越貼近小數字越容易偵測；必須連續 3 次達標才會提示。"
                                TextWrapping="Wrap"
                                Foreground="{StaticResource MutedTextBrush}"
                                FontSize="12" />
