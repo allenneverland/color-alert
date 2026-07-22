@@ -43,11 +43,16 @@ public partial class ColorPickerOverlayWindow : Window
 
         Loaded += (_, _) =>
         {
-            Activate();
-            Focus();
-            Keyboard.Focus(this);
             _previewTimer.Start();
             UpdatePreview();
+            _ = Dispatcher.BeginInvoke(
+                () =>
+                {
+                    Activate();
+                    Focus();
+                    Keyboard.Focus(this);
+                },
+                DispatcherPriority.Input);
         };
         Closed += (_, _) => _previewTimer.Stop();
     }

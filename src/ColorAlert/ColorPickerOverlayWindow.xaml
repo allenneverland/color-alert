@@ -7,13 +7,15 @@
         AllowsTransparency="True"
         Background="Transparent"
         ShowInTaskbar="False"
+        ShowActivated="True"
+        Focusable="True"
         Topmost="True"
         Cursor="Cross"
         WindowStartupLocation="Manual"
         PreviewMouseMove="Overlay_MouseMove"
         PreviewMouseLeftButtonDown="Overlay_MouseLeftButtonDown"
         PreviewKeyDown="Overlay_KeyDown">
-    <Grid x:Name="OverlayRoot" Background="Transparent">
+    <Grid x:Name="OverlayRoot" Background="#01000000">
         <Canvas IsHitTestVisible="False">
             <Border x:Name="PreviewPanel"
                     Padding="8"
