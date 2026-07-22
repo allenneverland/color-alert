@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ColorAlert.Core/ColorAlert.Core.csproj" />
+    <Project Path="src/ColorAlert/ColorAlert.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ColorAlert.Core.Tests/ColorAlert.Core.Tests.csproj" />
+  </Folder>
+</Solution>
+
