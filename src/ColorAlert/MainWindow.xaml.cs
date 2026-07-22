@@ -127,9 +127,6 @@ public partial class MainWindow : Window
         base.OnSourceInitialized(e);
 
         var handle = new WindowInteropHelper(this).Handle;
-        _ = NativeMethods.SetWindowDisplayAffinity(
-            handle,
-            NativeMethods.WdaExcludeFromCapture);
         _windowSource = HwndSource.FromHwnd(handle);
         _windowSource?.AddHook(WindowMessageHook);
         _sessionNotificationRegistered = NativeMethods.WTSRegisterSessionNotification(

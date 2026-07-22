@@ -213,9 +213,6 @@ internal sealed class RegionOutlineOverlay : IDisposable
     {
         window.Show();
         var handle = new WindowInteropHelper(window).Handle;
-        _ = NativeMethods.SetWindowDisplayAffinity(
-            handle,
-            NativeMethods.WdaExcludeFromCapture);
         var extendedStyle = NativeMethods.GetWindowLongPtr(handle, NativeMethods.GwlExStyle);
         _ = NativeMethods.SetWindowLongPtr(
             handle,

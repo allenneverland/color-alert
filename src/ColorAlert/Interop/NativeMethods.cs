@@ -14,7 +14,6 @@ internal static partial class NativeMethods
     internal const uint BiRgb = 0;
     internal const uint SourceCopy = 0x00CC0020;
     internal const uint CaptureLayeredWindows = 0x40000000;
-    internal const uint WdaExcludeFromCapture = 0x00000011;
 
     internal const int WmDisplayChange = 0x007E;
     internal const int WmWtsSessionChange = 0x02B1;
@@ -101,10 +100,6 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool SetForegroundWindow(nint windowHandle);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static partial bool SetWindowDisplayAffinity(nint windowHandle, uint affinity);
 
     [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
     internal static partial nint GetWindowLongPtr(nint windowHandle, int index);
