@@ -2,12 +2,15 @@ using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using ColorAlert.Core;
 using ColorAlert.Interop;
 using ColorAlert.Services;
+using Brush = System.Windows.Media.Brush;
+using Button = System.Windows.Controls.Button;
 using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
 
@@ -27,6 +30,8 @@ public partial class MainWindow : Window
     private readonly Forms.ContextMenuStrip _trayMenu;
     private readonly Forms.ToolStripMenuItem _trayStartItem;
     private readonly Forms.ToolStripMenuItem _trayPauseItem;
+    private readonly Dictionary<Guid, RegionDisplayState> _regionStates = [];
+    private readonly Dictionary<Guid, RegionRowControls> _regionRowControls = [];
 
     private MonitorController? _monitorController;
     private AppSettings _settings = new();
@@ -36,11 +41,14 @@ public partial class MainWindow : Window
     private bool _initialized;
     private bool _uiReady;
     private bool _updatingControls;
-    private bool _regionInvalid;
     private bool _exitRequested;
     private bool _trayHintShown;
     private bool _shutdownStarted;
     private bool _shutdownComplete;
+    private bool _regionOperationInProgress;
+    private bool _suppressRegionOutline;
+    private MonitorStatus _lastDisplayedStatus = MonitorStatus.Idle;
+    private string? _lastStatusError;
 
     public MainWindow()
     {
@@ -54,13 +62,13 @@ public partial class MainWindow : Window
 
         _trayStartItem = new Forms.ToolStripMenuItem("開始監看");
         _trayPauseItem = new Forms.ToolStripMenuItem("暫停") { Enabled = false };
-        var selectItem = new Forms.ToolStripMenuItem("重新選取區域");
+        var addRegionItem = new Forms.ToolStripMenuItem("新增監看區域");
         var showItem = new Forms.ToolStripMenuItem("顯示主畫面");
         var exitItem = new Forms.ToolStripMenuItem("退出");
 
         _trayStartItem.Click += (_, _) => Dispatch(StartMonitoringAsync);
         _trayPauseItem.Click += (_, _) => Dispatch(PauseMonitoringAsync);
-        selectItem.Click += (_, _) => Dispatch(SelectRegionAsync);
+        addRegionItem.Click += (_, _) => Dispatch(AddRegionAsync);
         showItem.Click += (_, _) => RestoreFromTray();
         exitItem.Click += (_, _) => Dispatch(RequestExitAsync);
 
@@ -68,7 +76,7 @@ public partial class MainWindow : Window
         _trayMenu.Items.AddRange([
             _trayStartItem,
             _trayPauseItem,
-            selectItem,
+            addRegionItem,
             new Forms.ToolStripSeparator(),
             showItem,
             exitItem,
@@ -140,11 +148,13 @@ public partial class MainWindow : Window
                 new GdiScreenSampler(),
                 _alertPlayer);
             _monitorController.StatusChanged += MonitorController_StatusChanged;
-            _monitorController.Sampled += MonitorController_Sampled;
+            _monitorController.RegionStatusChanged += MonitorController_RegionStatusChanged;
 
-            _settings = await _settingsStore.LoadAsync();
+            _settings = (await _settingsStore.LoadAsync()).Normalize();
+            _monitorController.SynchronizeRegions(_settings.Regions);
+            InitializeRegionStates();
             ApplySettingsToControls();
-            ValidateSavedRegion();
+            ValidateRegions();
             ApplyStatus(MonitorStatus.Idle);
         }
         catch (Exception exception)
@@ -163,12 +173,10 @@ public partial class MainWindow : Window
 
     private void MainWindow_StateChanged(object? sender, EventArgs e)
     {
-        if (WindowState != WindowState.Minimized)
+        if (WindowState == WindowState.Minimized)
         {
-            return;
+            HideToTray();
         }
-
-        HideToTray();
     }
 
     private async void MainWindow_Closing(object? sender, CancelEventArgs e)
@@ -202,11 +210,32 @@ public partial class MainWindow : Window
     private async void PauseButton_Click(object sender, RoutedEventArgs e) =>
         await PauseMonitoringAsync();
 
-    private async void SelectRegionButton_Click(object sender, RoutedEventArgs e) =>
-        await SelectRegionAsync();
+    private async void AddRegionButton_Click(object sender, RoutedEventArgs e) =>
+        await AddRegionAsync();
 
-    private async void PickColorButton_Click(object sender, RoutedEventArgs e) =>
-        await PickTargetColorAsync();
+    private async void UpdateBaselineButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: Guid regionId })
+        {
+            await UpdateBaselineAsync(regionId);
+        }
+    }
+
+    private async void ReselectRegionButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: Guid regionId })
+        {
+            await ReselectRegionAsync(regionId);
+        }
+    }
+
+    private async void DeleteRegionButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button { Tag: Guid regionId })
+        {
+            await DeleteRegionAsync(regionId);
+        }
+    }
 
     private async void TestSoundButton_Click(object sender, RoutedEventArgs e)
     {
@@ -273,32 +302,34 @@ public partial class MainWindow : Window
 
     private async Task StartMonitoringAsync()
     {
-        if (_monitorController is null)
+        if (_monitorController is null || _regionOperationInProgress)
         {
             return;
         }
 
-        if (_settings.Region is not { IsValid: true } region)
+        if (_settings.Regions.Length == 0)
         {
             RestoreFromTray();
             System.Windows.MessageBox.Show(
                 this,
-                "請先選取要監看的螢幕區域。",
+                "請先新增至少一個監看區域。",
                 "尚未選取區域",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
             return;
         }
 
-        if (!DisplayService.IsAvailable(region))
+        ValidateRegions();
+        var invalidRegions = _settings.Regions
+            .Where(definition => !DisplayService.IsAvailable(definition.Bounds))
+            .ToArray();
+        if (invalidRegions.Length > 0)
         {
-            _regionInvalid = true;
-            UpdateRegionText();
             RestoreFromTray();
             System.Windows.MessageBox.Show(
                 this,
-                "原本的監看區域已不在目前顯示器範圍內，請重新選取。",
-                "顯示器配置已變更",
+                "部分監看區域已超出目前顯示器範圍，請重新選取或刪除標示的項目。",
+                "監看區域無效",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
             return;
@@ -306,9 +337,15 @@ public partial class MainWindow : Window
 
         try
         {
-            _regionInvalid = false;
+            SetRegionOperationInProgress(true);
+            _monitorController.SynchronizeRegions(_settings.Regions);
+            if (_monitorController.GetMissingReferenceIds().Count > 0)
+            {
+                await CaptureMissingReferencesAsync();
+            }
+
             await _monitorController.StartAsync(
-                region,
+                _settings.Regions,
                 _settings.Detection,
                 _settings.AlertMode);
             await PersistSettingsAsync(showError: false);
@@ -316,6 +353,17 @@ public partial class MainWindow : Window
         catch (Exception exception)
         {
             ApplyStatus(MonitorStatus.Error, exception.Message);
+            RestoreFromTray();
+            System.Windows.MessageBox.Show(
+                this,
+                $"無法開始監看：\n\n{exception.Message}",
+                "開始失敗",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            SetRegionOperationInProgress(false);
         }
     }
 
@@ -336,128 +384,341 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task SelectRegionAsync()
+    private async Task AddRegionAsync()
     {
-        if (_monitorController is null)
+        if (_monitorController is null || _regionOperationInProgress)
         {
             return;
         }
 
-        var shouldResumeOnCancel = _monitorController.IsRunning;
-        if (shouldResumeOnCancel)
+        if (_settings.Regions.Length >= AppSettings.MaximumRegionCount)
         {
-            await _monitorController.PauseAsync();
+            RestoreFromTray();
+            System.Windows.MessageBox.Show(
+                this,
+                $"最多只能同時監看 {AppSettings.MaximumRegionCount} 個區域。",
+                "已達上限",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
         }
 
-        _regionOutlineOverlay.Hide();
-        Hide();
-        ShowInTaskbar = false;
-        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
-
-        ScreenRegion? selectedRegion = null;
+        var shouldResume = _monitorController.IsRunning;
+        SetRegionOperationInProgress(true);
         try
         {
-            var overlay = new SelectionOverlayWindow();
-            if (overlay.ShowDialog() == true)
+            if (shouldResume)
             {
-                selectedRegion = overlay.SelectedRegion;
+                await _monitorController.PauseAsync();
             }
+
+            var selectedRegion = await SelectRegionAndCaptureAsync();
+            if (selectedRegion is not { } result)
+            {
+                return;
+            }
+
+            var definition = new MonitoredRegionDefinition { Bounds = result.Region };
+            _settings = _settings with
+            {
+                Regions = [.. _settings.Regions, definition],
+            };
+            _monitorController.SynchronizeRegions(_settings.Regions);
+            _monitorController.SetReference(definition.Id, result.ReferenceFrame);
+            _regionStates[definition.Id] = new RegionDisplayState
+            {
+                Status = RegionMonitorStatus.Monitoring,
+                HasReference = true,
+            };
+            RenderRegionList();
+            UpdateRegionOutline();
+            await PersistSettingsAsync(showError: true);
         }
         catch (Exception exception)
         {
             System.Windows.MessageBox.Show(
-                $"無法開啟區域選取介面：\n\n{exception.Message}",
+                this,
+                $"無法新增監看區域：\n\n{exception.Message}",
+                "新增失敗",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            SetRegionOperationInProgress(false);
+            if (shouldResume && _settings.Regions.Length > 0)
+            {
+                await StartMonitoringAsync();
+            }
+        }
+    }
+
+    private async Task ReselectRegionAsync(Guid regionId)
+    {
+        if (_monitorController is null || _regionOperationInProgress)
+        {
+            return;
+        }
+
+        var existing = FindRegion(regionId);
+        if (existing is null)
+        {
+            return;
+        }
+
+        var shouldResume = _monitorController.IsRunning;
+        SetRegionOperationInProgress(true);
+        try
+        {
+            if (shouldResume)
+            {
+                await _monitorController.PauseAsync();
+            }
+
+            var selectedRegion = await SelectRegionAndCaptureAsync();
+            if (selectedRegion is not { } result)
+            {
+                return;
+            }
+
+            var replacement = existing with { Bounds = result.Region };
+            _settings = _settings with
+            {
+                Regions = _settings.Regions
+                    .Select(region => region.Id == regionId ? replacement : region)
+                    .ToArray(),
+            };
+            _monitorController.SynchronizeRegions(_settings.Regions);
+            _monitorController.SetReference(regionId, result.ReferenceFrame);
+            _regionStates[regionId] = new RegionDisplayState
+            {
+                Status = RegionMonitorStatus.Monitoring,
+                HasReference = true,
+            };
+            RenderRegionList();
+            UpdateRegionOutline();
+            await PersistSettingsAsync(showError: true);
+        }
+        catch (Exception exception)
+        {
+            System.Windows.MessageBox.Show(
+                this,
+                $"無法重新選取區域：\n\n{exception.Message}",
                 "選取失敗",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
         finally
         {
-            RestoreFromTray();
-            UpdateRegionOutline();
-        }
-
-        if (selectedRegion is { IsValid: true } region)
-        {
-            _settings = _settings with { Region = region };
-            _regionInvalid = false;
-            _monitorController.ResetDetection();
-            UpdateRegionText();
-            UpdateRegionOutline();
-            ApplyStatus(MonitorStatus.Paused);
-            SampleText.Text = "目前畫面變化：—";
-            await PersistSettingsAsync(showError: true);
-            return;
-        }
-
-        if (shouldResumeOnCancel)
-        {
-            await StartMonitoringAsync();
+            SetRegionOperationInProgress(false);
+            if (shouldResume)
+            {
+                await StartMonitoringAsync();
+            }
         }
     }
 
-    private async Task PickTargetColorAsync()
+    private async Task UpdateBaselineAsync(Guid regionId)
+    {
+        if (_monitorController is null || _regionOperationInProgress)
+        {
+            return;
+        }
+
+        var definition = FindRegion(regionId);
+        if (definition is null)
+        {
+            return;
+        }
+
+        var shouldResume = _monitorController.IsRunning;
+        SetRegionOperationInProgress(true);
+        try
+        {
+            if (shouldResume)
+            {
+                await _monitorController.PauseAsync();
+            }
+
+            var wasVisible = PrepareForDesktopCapture();
+            ReferenceFrame referenceFrame;
+            try
+            {
+                await WaitForDesktopRedrawAsync();
+                referenceFrame = await _monitorController.CaptureReferenceAsync(definition.Bounds);
+            }
+            finally
+            {
+                RestoreAfterDesktopCapture(wasVisible);
+            }
+
+            _monitorController.SetReference(regionId, referenceFrame);
+            UpdateRegionOutline();
+        }
+        catch (Exception exception)
+        {
+            RestoreFromTray();
+            System.Windows.MessageBox.Show(
+                this,
+                $"無法更新基準畫面：\n\n{exception.Message}",
+                "更新失敗",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            SetRegionOperationInProgress(false);
+            if (shouldResume)
+            {
+                await StartMonitoringAsync();
+            }
+        }
+    }
+
+    private async Task DeleteRegionAsync(Guid regionId)
+    {
+        if (_monitorController is null || _regionOperationInProgress)
+        {
+            return;
+        }
+
+        var definition = FindRegion(regionId);
+        if (definition is null)
+        {
+            return;
+        }
+
+        var result = System.Windows.MessageBox.Show(
+            this,
+            "確定要刪除這個監看區域嗎？",
+            "刪除監看區域",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+        if (result != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        var shouldResume = _monitorController.IsRunning;
+        SetRegionOperationInProgress(true);
+        try
+        {
+            if (shouldResume)
+            {
+                await _monitorController.PauseAsync();
+            }
+
+            _settings = _settings with
+            {
+                Regions = _settings.Regions.Where(region => region.Id != regionId).ToArray(),
+            };
+            _monitorController.SynchronizeRegions(_settings.Regions);
+            _regionStates.Remove(regionId);
+            RenderRegionList();
+            UpdateRegionOutline();
+            await PersistSettingsAsync(showError: true);
+            if (_settings.Regions.Length == 0)
+            {
+                ApplyStatus(MonitorStatus.Paused);
+            }
+        }
+        finally
+        {
+            SetRegionOperationInProgress(false);
+            if (shouldResume && _settings.Regions.Length > 0)
+            {
+                await StartMonitoringAsync();
+            }
+        }
+    }
+
+    private async Task<CapturedRegion?> SelectRegionAndCaptureAsync()
+    {
+        if (_monitorController is null)
+        {
+            return null;
+        }
+
+        _suppressRegionOutline = true;
+        _regionOutlineOverlay.Hide();
+        Hide();
+        ShowInTaskbar = false;
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+
+        try
+        {
+            var overlay = new SelectionOverlayWindow();
+            if (overlay.ShowDialog() != true || overlay.SelectedRegion is not { IsValid: true } region)
+            {
+                return null;
+            }
+
+            await WaitForDesktopRedrawAsync();
+            var referenceFrame = await _monitorController.CaptureReferenceAsync(region);
+            return new CapturedRegion(region, referenceFrame);
+        }
+        finally
+        {
+            _suppressRegionOutline = false;
+            RestoreFromTray();
+            UpdateRegionOutline();
+        }
+    }
+
+    private async Task CaptureMissingReferencesAsync()
     {
         if (_monitorController is null)
         {
             return;
         }
 
-        var shouldResume = _monitorController.IsRunning;
-        if (shouldResume)
+        var missingIds = _monitorController.GetMissingReferenceIds().ToHashSet();
+        if (missingIds.Count == 0)
         {
-            await _monitorController.PauseAsync();
+            return;
         }
 
-        _regionOutlineOverlay.Hide();
-        Hide();
-        ShowInTaskbar = false;
-        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
-
-        (int X, int Y)? selectedPoint = null;
+        var wasVisible = PrepareForDesktopCapture();
         try
         {
-            var picker = new ColorPickerWindow();
-            if (picker.ShowDialog() == true)
+            await WaitForDesktopRedrawAsync();
+            foreach (var definition in _settings.Regions.Where(region => missingIds.Contains(region.Id)))
             {
-                selectedPoint = picker.SelectedPoint;
+                var referenceFrame = await _monitorController.CaptureReferenceAsync(definition.Bounds);
+                _monitorController.SetReference(definition.Id, referenceFrame);
             }
-
-            if (selectedPoint is { } point)
-            {
-                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
-                await Task.Delay(75);
-
-                var targetColor = await _monitorController.PickColorAtAsync(point.X, point.Y);
-                _settings = _settings with
-                {
-                    Detection = _settings.Detection with { TargetColor = targetColor },
-                };
-                _monitorController.UpdateSettings(_settings.Detection);
-                _monitorController.ResetDetection();
-                UpdateDetectionDisplay();
-                SampleText.Text = "目前畫面變化：—";
-                await PersistSettingsAsync(showError: true);
-            }
-        }
-        catch (Exception exception)
-        {
-            System.Windows.MessageBox.Show(
-                $"無法從畫面取得顏色：\n\n{exception.Message}",
-                "取色失敗",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
         }
         finally
         {
+            RestoreAfterDesktopCapture(wasVisible);
+        }
+    }
+
+    private bool PrepareForDesktopCapture()
+    {
+        var wasVisible = IsVisible;
+        _suppressRegionOutline = true;
+        _regionOutlineOverlay.Hide();
+        Hide();
+        ShowInTaskbar = false;
+        return wasVisible;
+    }
+
+    private void RestoreAfterDesktopCapture(bool wasVisible)
+    {
+        _suppressRegionOutline = false;
+        if (wasVisible)
+        {
             RestoreFromTray();
-            UpdateRegionOutline();
         }
 
-        if (shouldResume)
-        {
-            await StartMonitoringAsync();
-        }
+        UpdateRegionOutline();
+    }
+
+    private static async Task WaitForDesktopRedrawAsync()
+    {
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        await Task.Delay(100);
     }
 
     private void MonitorController_StatusChanged(
@@ -469,11 +730,43 @@ public partial class MainWindow : Window
             DispatcherPriority.Background);
     }
 
-    private void MonitorController_Sampled(object? sender, SampleStatistics statistics)
+    private void MonitorController_RegionStatusChanged(
+        object? sender,
+        RegionStatusChangedEventArgs e)
     {
         _ = Dispatcher.BeginInvoke(
-            () => SampleText.Text = $"目前畫面變化：{statistics.MismatchRatio:P2}",
+            () => ApplyRegionStatus(e),
             DispatcherPriority.Background);
+    }
+
+    private void ApplyRegionStatus(RegionStatusChangedEventArgs e)
+    {
+        var definition = FindRegion(e.RegionId);
+        if (definition is null)
+        {
+            return;
+        }
+
+        var status = DisplayService.IsAvailable(definition.Bounds)
+            ? e.Status
+            : RegionMonitorStatus.Invalid;
+        _regionStates.TryGetValue(e.RegionId, out var previous);
+        var statusChanged = previous?.Status != status;
+
+        _regionStates[e.RegionId] = new RegionDisplayState
+        {
+            Status = status,
+            MismatchRatio = e.MismatchRatio,
+            HasReference = e.HasReference,
+            ErrorMessage = e.ErrorMessage,
+        };
+        UpdateRegionRow(e.RegionId);
+        UpdateSampleSummary();
+
+        if (statusChanged)
+        {
+            UpdateRegionOutline();
+        }
     }
 
     private void ApplySettingsToControls()
@@ -494,17 +787,11 @@ public partial class MainWindow : Window
         _monitorController?.UpdateSettings(_settings.Detection);
         _monitorController?.UpdateAlertMode(_settings.AlertMode);
         UpdateDetectionDisplay();
-        UpdateRegionText();
+        RenderRegionList();
     }
 
     private void UpdateDetectionDisplay()
     {
-        var targetColor = _settings.Detection.TargetColor;
-        TargetColorText.Text = targetColor.ToHex();
-        TargetColorSwatch.Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(
-            targetColor.Red,
-            targetColor.Green,
-            targetColor.Blue));
         SensitivityValueText.Text = _settings.Detection.Sensitivity switch
         {
             <= 33 => "低",
@@ -513,26 +800,214 @@ public partial class MainWindow : Window
         };
     }
 
-    private void UpdateRegionText()
+    private void InitializeRegionStates()
     {
-        if (_settings.Region is not { IsValid: true } region)
+        _regionStates.Clear();
+        foreach (var definition in _settings.Regions)
         {
-            RegionText.Text = "尚未選取";
+            _regionStates[definition.Id] = new RegionDisplayState
+            {
+                Status = DisplayService.IsAvailable(definition.Bounds)
+                    ? RegionMonitorStatus.NeedsBaseline
+                    : RegionMonitorStatus.Invalid,
+            };
+        }
+    }
+
+    private void RenderRegionList()
+    {
+        RegionListPanel.Children.Clear();
+        _regionRowControls.Clear();
+        RegionCountText.Text = $"{_settings.Regions.Length} / {AppSettings.MaximumRegionCount}";
+        AddRegionButton.IsEnabled = !_regionOperationInProgress &&
+            _settings.Regions.Length < AppSettings.MaximumRegionCount;
+
+        if (_settings.Regions.Length == 0)
+        {
+            RegionListPanel.Children.Add(new TextBlock
+            {
+                Text = "尚未加入區域。按「新增區域」開始框選。",
+                Foreground = FindBrush("MutedTextBrush"),
+                FontSize = 14,
+                Padding = new Thickness(0, 8, 0, 8),
+            });
+            UpdateSampleSummary();
             return;
         }
 
-        var invalidSuffix = _regionInvalid ? "（已超出目前顯示器，請重新選取）" : string.Empty;
-        RegionText.Text = $"X {region.X:N0}, Y {region.Y:N0} · {region.Width:N0} × {region.Height:N0} px{invalidSuffix}";
+        for (var index = 0; index < _settings.Regions.Length; index++)
+        {
+            var definition = _settings.Regions[index];
+            RegionListPanel.Children.Add(CreateRegionRow(definition, index + 1));
+        }
+
+        UpdateSampleSummary();
+    }
+
+    private Border CreateRegionRow(MonitoredRegionDefinition definition, int index)
+    {
+        var root = new Border
+        {
+            Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(249, 250, 251)),
+            BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(234, 236, 240)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Margin = new Thickness(0, 0, 0, 8),
+            Padding = new Thickness(12),
+        };
+
+        var panel = new StackPanel();
+        root.Child = panel;
+
+        var header = new Grid();
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition());
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var indicator = new Border
+        {
+            Width = 9,
+            Height = 9,
+            Margin = new Thickness(0, 3, 8, 0),
+            VerticalAlignment = VerticalAlignment.Top,
+            CornerRadius = new CornerRadius(5),
+        };
+        Grid.SetColumn(indicator, 0);
+        header.Children.Add(indicator);
+
+        var title = new TextBlock
+        {
+            Text = $"區域 {index}",
+            FontWeight = FontWeights.SemiBold,
+            Foreground = FindBrush("TextBrush"),
+            FontSize = 14,
+        };
+        Grid.SetColumn(title, 1);
+        header.Children.Add(title);
+
+        var statusText = new TextBlock
+        {
+            Foreground = FindBrush("MutedTextBrush"),
+            FontSize = 12,
+        };
+        Grid.SetColumn(statusText, 2);
+        header.Children.Add(statusText);
+        panel.Children.Add(header);
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = FormatRegion(definition.Bounds),
+            Margin = new Thickness(17, 5, 0, 0),
+            Foreground = FindBrush("MutedTextBrush"),
+            FontSize = 12,
+        });
+
+        var footer = new Grid { Margin = new Thickness(17, 9, 0, 0) };
+        footer.ColumnDefinitions.Add(new ColumnDefinition());
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var mismatchText = new TextBlock
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = FindBrush("MutedTextBrush"),
+            FontSize = 12,
+        };
+        footer.Children.Add(mismatchText);
+
+        var actions = new StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
+        };
+        actions.Children.Add(CreateRegionActionButton("更新基準", definition.Id, UpdateBaselineButton_Click));
+        actions.Children.Add(CreateRegionActionButton("重新選取", definition.Id, ReselectRegionButton_Click));
+        actions.Children.Add(CreateRegionActionButton("刪除", definition.Id, DeleteRegionButton_Click));
+        Grid.SetColumn(actions, 1);
+        footer.Children.Add(actions);
+        panel.Children.Add(footer);
+
+        _regionRowControls[definition.Id] = new RegionRowControls(
+            indicator,
+            statusText,
+            mismatchText);
+        UpdateRegionRow(definition.Id);
+        return root;
+    }
+
+    private Button CreateRegionActionButton(
+        string text,
+        Guid regionId,
+        RoutedEventHandler handler)
+    {
+        var button = new Button
+        {
+            Content = text,
+            Tag = regionId,
+            Margin = new Thickness(6, 0, 0, 0),
+            IsEnabled = !_regionOperationInProgress,
+            Style = (Style)FindResource("SmallButtonStyle"),
+        };
+        button.Click += handler;
+        return button;
+    }
+
+    private void UpdateRegionRow(Guid regionId)
+    {
+        if (!_regionRowControls.TryGetValue(regionId, out var controls) ||
+            !_regionStates.TryGetValue(regionId, out var state))
+        {
+            return;
+        }
+
+        var (statusText, color) = state.Status switch
+        {
+            RegionMonitorStatus.Monitoring => ("待命", System.Windows.Media.Color.FromRgb(18, 183, 106)),
+            RegionMonitorStatus.Alerted => ("已觸發", System.Windows.Media.Color.FromRgb(247, 144, 9)),
+            RegionMonitorStatus.Error => ("擷取錯誤", System.Windows.Media.Color.FromRgb(240, 68, 56)),
+            RegionMonitorStatus.Invalid => ("需要處理", System.Windows.Media.Color.FromRgb(240, 68, 56)),
+            _ => ("待建立基準", System.Windows.Media.Color.FromRgb(102, 112, 133)),
+        };
+
+        controls.Indicator.Background = new SolidColorBrush(color);
+        controls.StatusText.Text = statusText;
+        controls.MismatchText.Text = state.Status switch
+        {
+            RegionMonitorStatus.Invalid => "已超出目前顯示器，請重新選取或刪除",
+            RegionMonitorStatus.Error => state.ErrorMessage ?? "擷取失敗，稍後會自動重試",
+            RegionMonitorStatus.NeedsBaseline => "下次開始監看時會自動取得基準",
+            _ => $"目前變化：{state.MismatchRatio:P2}",
+        };
+    }
+
+    private void UpdateSampleSummary()
+    {
+        if (_settings.Regions.Length == 0)
+        {
+            SampleText.Text = "尚未加入監看區域";
+            return;
+        }
+
+        var states = _settings.Regions
+            .Select(region => _regionStates.GetValueOrDefault(region.Id))
+            .Where(state => state is not null)
+            .ToArray();
+        var maximumMismatch = states.Length == 0
+            ? 0d
+            : states.Max(state => state!.MismatchRatio);
+        var alertedCount = states.Count(state => state!.Status == RegionMonitorStatus.Alerted);
+        SampleText.Text = alertedCount > 0
+            ? $"監看 {_settings.Regions.Length} 個區域 · {alertedCount} 個已觸發 · 最大變化 {maximumMismatch:P2}"
+            : $"監看 {_settings.Regions.Length} 個區域 · 最大變化 {maximumMismatch:P2}";
     }
 
     private void ApplyStatus(MonitorStatus status, string? errorMessage = null)
     {
+        _lastDisplayedStatus = status;
+        _lastStatusError = errorMessage;
         var (text, color) = status switch
         {
             MonitorStatus.Monitoring => ("監看中 — 等待畫面變化", System.Windows.Media.Color.FromRgb(18, 183, 106)),
-            MonitorStatus.Alerted => ("已提示 — 等待恢復目標顏色", System.Windows.Media.Color.FromRgb(247, 144, 9)),
+            MonitorStatus.Alerted => ("已提示 — 等待各區域恢復基準畫面", System.Windows.Media.Color.FromRgb(247, 144, 9)),
             MonitorStatus.Paused => ("已暫停", System.Windows.Media.Color.FromRgb(102, 112, 133)),
-            MonitorStatus.Error => ($"擷取錯誤 — {errorMessage ?? "稍後重試"}", System.Windows.Media.Color.FromRgb(240, 68, 56)),
+            MonitorStatus.Error => ($"部分區域擷取錯誤 — {errorMessage ?? "稍後重試"}", System.Windows.Media.Color.FromRgb(240, 68, 56)),
             _ => ("尚未開始", System.Windows.Media.Color.FromRgb(152, 162, 179)),
         };
 
@@ -540,45 +1015,82 @@ public partial class MainWindow : Window
         StatusIndicator.Background = new SolidColorBrush(color);
 
         var isRunning = _monitorController?.IsRunning == true;
-        StartButton.IsEnabled = !isRunning && _monitorController is not null;
-        PauseButton.IsEnabled = isRunning;
-        _trayStartItem.Enabled = !isRunning && _monitorController is not null;
-        _trayPauseItem.Enabled = isRunning;
+        var regionsCanStart = _settings.Regions.Length > 0 &&
+            _settings.Regions.All(region => DisplayService.IsAvailable(region.Bounds));
+        StartButton.IsEnabled = !isRunning &&
+            !_regionOperationInProgress &&
+            _monitorController is not null &&
+            regionsCanStart;
+        PauseButton.IsEnabled = isRunning && !_regionOperationInProgress;
+        _trayStartItem.Enabled = !isRunning &&
+            !_regionOperationInProgress &&
+            _monitorController is not null &&
+            regionsCanStart;
+        _trayPauseItem.Enabled = isRunning && !_regionOperationInProgress;
         _notifyIcon.Text = status switch
         {
             MonitorStatus.Monitoring => "Color Alert — 監看中",
             MonitorStatus.Alerted => "Color Alert — 已提示",
             MonitorStatus.Paused => "Color Alert — 已暫停",
-            MonitorStatus.Error => "Color Alert — 擷取錯誤",
+            MonitorStatus.Error => "Color Alert — 部分區域擷取錯誤",
             _ => "Color Alert — 尚未開始",
         };
     }
 
-    private void ValidateSavedRegion()
+    private void ValidateRegions()
     {
-        _regionInvalid = _settings.Region is { IsValid: true } region &&
-            !DisplayService.IsAvailable(region);
-        UpdateRegionText();
+        foreach (var definition in _settings.Regions)
+        {
+            if (!_regionStates.TryGetValue(definition.Id, out var state))
+            {
+                state = new RegionDisplayState();
+                _regionStates[definition.Id] = state;
+            }
+
+            if (!DisplayService.IsAvailable(definition.Bounds))
+            {
+                state.Status = RegionMonitorStatus.Invalid;
+            }
+            else if (state.Status == RegionMonitorStatus.Invalid)
+            {
+                state.Status = state.HasReference
+                    ? RegionMonitorStatus.Monitoring
+                    : RegionMonitorStatus.NeedsBaseline;
+            }
+        }
+
+        RenderRegionList();
         UpdateRegionOutline();
     }
 
     private async Task HandleDisplayChangeAsync()
     {
-        ValidateSavedRegion();
-        if (!_regionInvalid)
+        if (_monitorController is null)
         {
             return;
         }
 
-        if (_monitorController?.IsRunning == true)
+        if (_monitorController.IsRunning)
         {
             await _monitorController.PauseAsync();
         }
 
+        _monitorController.ClearReferences();
+        foreach (var definition in _settings.Regions)
+        {
+            _regionStates[definition.Id] = new RegionDisplayState
+            {
+                Status = DisplayService.IsAvailable(definition.Bounds)
+                    ? RegionMonitorStatus.NeedsBaseline
+                    : RegionMonitorStatus.Invalid,
+            };
+        }
+
+        ValidateRegions();
         _notifyIcon.ShowBalloonTip(
             3_000,
             "監看已暫停",
-            "顯示器配置已改變，請重新選取監看區域。",
+            "顯示器配置已改變；基準已清除，無效區域需要重新選取或刪除。",
             Forms.ToolTipIcon.Warning);
     }
 
@@ -607,14 +1119,7 @@ public partial class MainWindow : Window
 
         _resumeAfterSessionUnlock = false;
         await Task.Delay(500);
-
-        if (_settings.Region is { IsValid: true } region && DisplayService.IsAvailable(region))
-        {
-            await _monitorController.StartAsync(
-                region,
-                _settings.Detection,
-                _settings.AlertMode);
-        }
+        await StartMonitoringAsync();
     }
 
     private nint WindowMessageHook(
@@ -646,17 +1151,36 @@ public partial class MainWindow : Window
 
     private void UpdateRegionOutline()
     {
-        if (_settings.ShowRegionOverlay &&
-            !_regionInvalid &&
-            _settings.Region is { IsValid: true } region)
-        {
-            _regionOutlineOverlay.Show(region);
-        }
-        else
+        if (_suppressRegionOutline || !_settings.ShowRegionOverlay)
         {
             _regionOutlineOverlay.Hide();
+            return;
         }
+
+        var items = _settings.Regions.Select(definition => new RegionOutlineItem(
+            definition.Bounds,
+            _regionStates.TryGetValue(definition.Id, out var state)
+                ? state.Status
+                : RegionMonitorStatus.NeedsBaseline));
+        _regionOutlineOverlay.Show(items);
     }
+
+    private void SetRegionOperationInProgress(bool isInProgress)
+    {
+        _regionOperationInProgress = isInProgress;
+        AddRegionButton.IsEnabled = !isInProgress &&
+            _settings.Regions.Length < AppSettings.MaximumRegionCount;
+        ApplyStatus(_lastDisplayedStatus, _lastStatusError);
+        RenderRegionList();
+    }
+
+    private MonitoredRegionDefinition? FindRegion(Guid regionId) =>
+        _settings.Regions.FirstOrDefault(region => region.Id == regionId);
+
+    private Brush FindBrush(string resourceKey) => (Brush)FindResource(resourceKey);
+
+    private static string FormatRegion(ScreenRegion region) =>
+        $"X {region.X:N0}, Y {region.Y:N0} · {region.Width:N0} × {region.Height:N0} px";
 
     private void HideToTray()
     {
@@ -672,7 +1196,7 @@ public partial class MainWindow : Window
         _notifyIcon.ShowBalloonTip(
             timeout: 2_000,
             tipTitle: "Color Alert 仍在執行",
-            tipText: "可從系統匣暫停、重新選區或退出。",
+            tipText: "可從系統匣開始、暫停、新增區域或退出。",
             tipIcon: Forms.ToolTipIcon.Info);
     }
 
@@ -726,7 +1250,7 @@ public partial class MainWindow : Window
             if (_monitorController is not null)
             {
                 _monitorController.StatusChanged -= MonitorController_StatusChanged;
-                _monitorController.Sampled -= MonitorController_Sampled;
+                _monitorController.RegionStatusChanged -= MonitorController_RegionStatusChanged;
                 await _monitorController.DisposeAsync();
             }
         }
@@ -765,4 +1289,24 @@ public partial class MainWindow : Window
             // The application is already shutting down.
         }
     }
+
+    private sealed class RegionDisplayState
+    {
+        internal RegionMonitorStatus Status { get; set; } = RegionMonitorStatus.NeedsBaseline;
+
+        internal double MismatchRatio { get; set; }
+
+        internal bool HasReference { get; set; }
+
+        internal string? ErrorMessage { get; set; }
+    }
+
+    private sealed record RegionRowControls(
+        Border Indicator,
+        TextBlock StatusText,
+        TextBlock MismatchText);
+
+    private sealed record CapturedRegion(
+        ScreenRegion Region,
+        ReferenceFrame ReferenceFrame);
 }

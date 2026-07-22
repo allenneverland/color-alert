@@ -6,43 +6,62 @@ using ColorAlert.Interop;
 
 namespace ColorAlert.Services;
 
+internal readonly record struct RegionOutlineItem(
+    ScreenRegion Region,
+    RegionMonitorStatus Status);
+
 internal sealed class RegionOutlineOverlay : IDisposable
 {
     private const int LineThickness = 2;
+    private static readonly System.Windows.Media.Color NormalColor =
+        System.Windows.Media.Color.FromRgb(37, 99, 235);
+    private static readonly System.Windows.Media.Color AlertedColor =
+        System.Windows.Media.Color.FromRgb(234, 88, 12);
+
     private readonly List<Window> _lineWindows = [];
     private bool _disposed;
 
-    internal void Show(ScreenRegion region)
+    internal void Show(IEnumerable<RegionOutlineItem> regions)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(regions);
         Hide();
 
-        if (!region.IsValid || !DisplayService.IsAvailable(region))
-        {
-            return;
-        }
-
         var virtualBounds = DisplayService.GetVirtualScreenBounds();
-        AddLine(new ScreenRegion(
-            region.X,
-            region.Y - LineThickness,
-            region.Width,
-            LineThickness), virtualBounds);
-        AddLine(new ScreenRegion(
-            region.X,
-            checked((int)region.Bottom),
-            region.Width,
-            LineThickness), virtualBounds);
-        AddLine(new ScreenRegion(
-            region.X - LineThickness,
-            region.Y,
-            LineThickness,
-            region.Height), virtualBounds);
-        AddLine(new ScreenRegion(
-            checked((int)region.Right),
-            region.Y,
-            LineThickness,
-            region.Height), virtualBounds);
+        foreach (var item in regions)
+        {
+            var region = item.Region;
+            if (!region.IsValid ||
+                !DisplayService.IsAvailable(region) ||
+                item.Status == RegionMonitorStatus.Invalid)
+            {
+                continue;
+            }
+
+            var color = item.Status == RegionMonitorStatus.Alerted
+                ? AlertedColor
+                : NormalColor;
+            AddLine(new ScreenRegion(
+                region.X,
+                region.Y - LineThickness,
+                region.Width,
+                LineThickness), virtualBounds, color);
+            AddLine(new ScreenRegion(
+                region.X,
+                checked((int)region.Bottom),
+                region.Width,
+                LineThickness), virtualBounds, color);
+            AddLine(new ScreenRegion(
+                region.X - LineThickness,
+                region.Y,
+                LineThickness,
+                region.Height), virtualBounds, color);
+            AddLine(new ScreenRegion(
+                checked((int)region.Right),
+                region.Y,
+                LineThickness,
+                region.Height), virtualBounds, color);
+        }
     }
 
     internal void Hide()
@@ -66,7 +85,10 @@ internal sealed class RegionOutlineOverlay : IDisposable
         _disposed = true;
     }
 
-    private void AddLine(ScreenRegion requestedLine, ScreenRegion virtualBounds)
+    private void AddLine(
+        ScreenRegion requestedLine,
+        ScreenRegion virtualBounds,
+        System.Windows.Media.Color color)
     {
         var line = Intersect(requestedLine, virtualBounds);
         if (line.Width <= 0 || line.Height <= 0)
@@ -77,7 +99,7 @@ internal sealed class RegionOutlineOverlay : IDisposable
         var window = new Window
         {
             AllowsTransparency = true,
-            Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(37, 99, 235)),
+            Background = new SolidColorBrush(color),
             Height = 1,
             Width = 1,
             ResizeMode = ResizeMode.NoResize,

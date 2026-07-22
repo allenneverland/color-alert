@@ -2,10 +2,10 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Color Alert"
-        Width="600"
-        Height="780"
-        MinWidth="540"
-        MinHeight="700"
+        Width="680"
+        Height="820"
+        MinWidth="600"
+        MinHeight="720"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource WindowBackgroundBrush}"
         Loaded="MainWindow_Loaded"
@@ -23,9 +23,15 @@
 
         <Style TargetType="Button">
             <Setter Property="MinHeight" Value="38" />
-            <Setter Property="Padding" Value="16,8" />
+            <Setter Property="Padding" Value="14,8" />
             <Setter Property="FontSize" Value="14" />
             <Setter Property="Cursor" Value="Hand" />
+        </Style>
+
+        <Style x:Key="SmallButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Padding" Value="10,5" />
+            <Setter Property="FontSize" Value="12" />
         </Style>
 
         <Style x:Key="PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
@@ -58,7 +64,7 @@
                            FontSize="28"
                            FontWeight="Bold" />
                 <TextBlock Margin="0,5,0,0"
-                           Text="當指定區域偏離目標顏色時，播放提示音。"
+                           Text="當任一監看區域與匡選時的畫面不同時，播放提示音。"
                            Foreground="{StaticResource MutedTextBrush}"
                            FontSize="14" />
             </StackPanel>
@@ -88,7 +94,7 @@
                                    FontWeight="SemiBold" />
                         <TextBlock x:Name="SampleText"
                                    Margin="0,4,0,0"
-                                   Text="目前畫面變化：—"
+                                   Text="尚未加入監看區域"
                                    Foreground="{StaticResource MutedTextBrush}"
                                    FontSize="13" />
                     </StackPanel>
@@ -106,6 +112,7 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
@@ -114,32 +121,41 @@
 
                     <StackPanel Grid.Row="0" Grid.Column="0">
                         <TextBlock Style="{StaticResource SectionTitleStyle}" Text="監看區域" />
-                        <TextBlock x:Name="RegionText"
-                                   Margin="0,7,12,0"
-                                   Text="尚未選取"
-                                   TextWrapping="Wrap"
+                        <TextBlock x:Name="RegionCountText"
+                                   Margin="0,5,12,0"
+                                   Text="0 / 10"
                                    Foreground="{StaticResource MutedTextBrush}"
-                                   FontSize="14" />
+                                   FontSize="13" />
                     </StackPanel>
 
-                    <Button x:Name="SelectRegionButton"
+                    <Button x:Name="AddRegionButton"
                             Grid.Row="0"
                             Grid.Column="1"
-                            Content="選取區域"
-                            Click="SelectRegionButton_Click" />
+                            Content="新增區域"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            Click="AddRegionButton_Click" />
 
-                    <TextBlock Grid.Row="1"
+                    <ScrollViewer Grid.Row="1"
+                                  Grid.ColumnSpan="2"
+                                  Margin="0,14,0,0"
+                                  MaxHeight="260"
+                                  VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="RegionListPanel" />
+                    </ScrollViewer>
+
+                    <TextBlock Grid.Row="2"
                                Grid.ColumnSpan="2"
                                Margin="0,14,0,0"
-                               Text="可跨螢幕框選；按 Esc 可取消且不會覆蓋原本區域。"
+                               Text="新增或重新選取時會保存當下畫面作為基準；基準只留在記憶體中。按 Esc 可取消。"
+                               TextWrapping="Wrap"
                                Foreground="{StaticResource MutedTextBrush}"
                                FontSize="12" />
 
                     <CheckBox x:Name="ShowRegionOverlayCheckBox"
-                              Grid.Row="2"
+                              Grid.Row="3"
                               Grid.ColumnSpan="2"
                               Margin="0,14,0,0"
-                              Content="顯示監看區域"
+                              Content="顯示所有監看區域（橘色表示已觸發）"
                               IsChecked="True"
                               FontSize="14"
                               Checked="ShowRegionOverlayCheckBox_Changed"
@@ -152,40 +168,6 @@
                     <TextBlock Style="{StaticResource SectionTitleStyle}" Text="偵測設定" />
 
                     <Grid Margin="0,18,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-
-                        <Border x:Name="TargetColorSwatch"
-                                Grid.Column="0"
-                                Width="40"
-                                Height="40"
-                                Margin="0,0,12,0"
-                                CornerRadius="6"
-                                BorderBrush="#FFD0D5DD"
-                                BorderThickness="1"
-                                Background="Black" />
-
-                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                            <TextBlock Text="目標顏色"
-                                       Foreground="{StaticResource TextBrush}"
-                                       FontSize="14" />
-                            <TextBlock x:Name="TargetColorText"
-                                       Margin="0,3,0,0"
-                                       Text="#000000"
-                                       Foreground="{StaticResource MutedTextBrush}"
-                                       FontSize="13" />
-                        </StackPanel>
-
-                        <Button x:Name="PickColorButton"
-                                Grid.Column="2"
-                                Content="從畫面取色"
-                                Click="PickColorButton_Click" />
-                    </Grid>
-
-                    <Grid Margin="0,20,0,0">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
@@ -249,7 +231,7 @@
                     </Grid>
 
                     <TextBlock Margin="0,14,0,0"
-                               Text="敏感度越高，越小的顏色或範圍變化也會觸發。必須連續 3 次達標才會提示。"
+                               Text="敏感度越高，越小的畫面變化也會觸發。必須連續 3 次達標才會提示。"
                                TextWrapping="Wrap"
                                Foreground="{StaticResource MutedTextBrush}"
                                FontSize="12" />

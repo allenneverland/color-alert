@@ -11,13 +11,32 @@ internal sealed class MonitorStatusChangedEventArgs(
     internal string? ErrorMessage { get; } = errorMessage;
 }
 
+internal sealed class RegionStatusChangedEventArgs(
+    Guid regionId,
+    RegionMonitorStatus status,
+    double mismatchRatio,
+    bool hasReference,
+    string? errorMessage = null) : EventArgs
+{
+    internal Guid RegionId { get; } = regionId;
+
+    internal RegionMonitorStatus Status { get; } = status;
+
+    internal double MismatchRatio { get; } = mismatchRatio;
+
+    internal bool HasReference { get; } = hasReference;
+
+    internal string? ErrorMessage { get; } = errorMessage;
+}
+
 internal sealed class MonitorController : IAsyncDisposable
 {
     private readonly Lock _stateLock = new();
     private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private readonly GdiScreenSampler _screenSampler;
     private readonly IAlertPlayer _alertPlayer;
-    private readonly AlertStateMachine _stateMachine = new();
+    private readonly MultiRegionAlertCoordinator _coordinator = new();
+    private readonly Dictionary<Guid, RegionRuntime> _regions = [];
 
     private CancellationTokenSource? _monitorCancellation;
     private Task? _monitorTask;
@@ -34,7 +53,7 @@ internal sealed class MonitorController : IAsyncDisposable
 
     internal event EventHandler<MonitorStatusChangedEventArgs>? StatusChanged;
 
-    internal event EventHandler<SampleStatistics>? Sampled;
+    internal event EventHandler<RegionStatusChangedEventArgs>? RegionStatusChanged;
 
     internal bool IsRunning
     {
@@ -76,19 +95,160 @@ internal sealed class MonitorController : IAsyncDisposable
         }
     }
 
-    internal void ResetDetection() => _stateMachine.Reset();
+    internal void SynchronizeRegions(IReadOnlyList<MonitoredRegionDefinition> definitions)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(definitions);
+
+        if (definitions.Count > AppSettings.MaximumRegionCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(definitions),
+                $"最多只能監看 {AppSettings.MaximumRegionCount} 個區域。");
+        }
+
+        List<RegionStatusChangedEventArgs> changes = [];
+        lock (_stateLock)
+        {
+            EnsureStopped();
+            var desiredIds = definitions.Select(definition => definition.Id).ToHashSet();
+            foreach (var removedId in _regions.Keys.Except(desiredIds).ToArray())
+            {
+                _regions.Remove(removedId);
+            }
+
+            foreach (var definition in definitions)
+            {
+                if (definition.Id == Guid.Empty || !definition.Bounds.IsValid)
+                {
+                    throw new ArgumentException("監看區域包含無效資料。", nameof(definitions));
+                }
+
+                if (!_regions.TryGetValue(definition.Id, out var runtime))
+                {
+                    runtime = new RegionRuntime(definition);
+                    _regions.Add(definition.Id, runtime);
+                }
+                else if (runtime.Definition.Bounds != definition.Bounds)
+                {
+                    runtime.Definition = definition;
+                    runtime.ReferenceFrame = null;
+                    runtime.MismatchRatio = 0d;
+                    runtime.Status = RegionMonitorStatus.NeedsBaseline;
+                    runtime.ErrorMessage = null;
+                    runtime.RetryAfterUtc = DateTimeOffset.MinValue;
+                    _coordinator.Reset(definition.Id);
+                }
+                else
+                {
+                    runtime.Definition = definition;
+                }
+
+                changes.Add(CreateEventArgs(runtime));
+            }
+
+            _coordinator.Synchronize(desiredIds);
+        }
+
+        RaiseRegionChanges(changes);
+    }
+
+    internal IReadOnlyList<Guid> GetMissingReferenceIds()
+    {
+        lock (_stateLock)
+        {
+            return _regions.Values
+                .Where(runtime => runtime.ReferenceFrame is null)
+                .Select(runtime => runtime.Definition.Id)
+                .ToArray();
+        }
+    }
+
+    internal async Task<ReferenceFrame> CaptureReferenceAsync(
+        ScreenRegion region,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await _lifecycleGate.WaitAsync(cancellationToken);
+
+        try
+        {
+            lock (_stateLock)
+            {
+                EnsureStopped();
+            }
+
+            return await Task.Run(
+                () => _screenSampler.CaptureReference(region),
+                cancellationToken);
+        }
+        finally
+        {
+            _lifecycleGate.Release();
+        }
+    }
+
+    internal void SetReference(Guid regionId, ReferenceFrame referenceFrame)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(referenceFrame);
+        RegionStatusChangedEventArgs change;
+
+        lock (_stateLock)
+        {
+            EnsureStopped();
+            if (!_regions.TryGetValue(regionId, out var runtime))
+            {
+                throw new ArgumentException("找不到指定的監看區域。", nameof(regionId));
+            }
+
+            runtime.ReferenceFrame = referenceFrame;
+            runtime.MismatchRatio = 0d;
+            runtime.Status = RegionMonitorStatus.Monitoring;
+            runtime.ErrorMessage = null;
+            runtime.RetryAfterUtc = DateTimeOffset.MinValue;
+            _coordinator.Reset(regionId);
+            change = CreateEventArgs(runtime);
+        }
+
+        RegionStatusChanged?.Invoke(this, change);
+    }
+
+    internal void ClearReferences()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        List<RegionStatusChangedEventArgs> changes = [];
+
+        lock (_stateLock)
+        {
+            EnsureStopped();
+            _coordinator.ResetAll();
+            foreach (var runtime in _regions.Values)
+            {
+                runtime.ReferenceFrame = null;
+                runtime.MismatchRatio = 0d;
+                runtime.Status = RegionMonitorStatus.NeedsBaseline;
+                runtime.ErrorMessage = null;
+                runtime.RetryAfterUtc = DateTimeOffset.MinValue;
+                changes.Add(CreateEventArgs(runtime));
+            }
+        }
+
+        RaiseRegionChanges(changes);
+    }
 
     internal async Task StartAsync(
-        ScreenRegion region,
+        IReadOnlyList<MonitoredRegionDefinition> definitions,
         DetectionSettings settings,
         AlertRepeatMode alertMode,
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(definitions);
 
-        if (!region.IsValid)
+        if (definitions.Count is 0 or > AppSettings.MaximumRegionCount)
         {
-            throw new ArgumentException("監看區域無效。", nameof(region));
+            throw new ArgumentException("監看區域數量無效。", nameof(definitions));
         }
 
         await _lifecycleGate.WaitAsync(cancellationToken);
@@ -99,40 +259,22 @@ internal sealed class MonitorController : IAsyncDisposable
 
             lock (_stateLock)
             {
+                SynchronizeRegionsCore(definitions);
+                if (_regions.Values.Any(runtime => runtime.ReferenceFrame is null))
+                {
+                    monitorCancellation.Dispose();
+                    throw new InvalidOperationException("所有監看區域都必須先建立基準畫面。");
+                }
+
                 _settings = settings.Normalize();
                 _alertMode = Enum.IsDefined(alertMode) ? alertMode : AlertRepeatMode.Once;
                 _monitorCancellation = monitorCancellation;
                 _monitorTask = Task.Run(
-                    () => MonitorLoopAsync(region, monitorCancellation.Token),
+                    () => MonitorLoopAsync(monitorCancellation.Token),
                     CancellationToken.None);
             }
 
-            SetStatus(_stateMachine.IsAlerted ? MonitorStatus.Alerted : MonitorStatus.Monitoring);
-        }
-        finally
-        {
-            _lifecycleGate.Release();
-        }
-    }
-
-    internal async Task<RgbColor> PickColorAtAsync(
-        int x,
-        int y,
-        CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        await _lifecycleGate.WaitAsync(cancellationToken);
-
-        try
-        {
-            if (IsRunning)
-            {
-                throw new InvalidOperationException("取色前必須先暫停監看。");
-            }
-
-            return await Task.Run(
-                () => _screenSampler.SampleColorAt(x, y),
-                cancellationToken);
+            SetStatus(GetAggregateStatus());
         }
         finally
         {
@@ -177,7 +319,7 @@ internal sealed class MonitorController : IAsyncDisposable
         }
     }
 
-    private async Task MonitorLoopAsync(ScreenRegion region, CancellationToken cancellationToken)
+    private async Task MonitorLoopAsync(CancellationToken cancellationToken)
     {
         DetectionSettings initialSettings;
         lock (_stateLock)
@@ -194,46 +336,88 @@ internal sealed class MonitorController : IAsyncDisposable
             {
                 DetectionSettings currentSettings;
                 AlertRepeatMode currentAlertMode;
+                RegionSnapshot[] snapshots;
                 lock (_stateLock)
                 {
                     currentSettings = _settings;
                     currentAlertMode = _alertMode;
+                    snapshots = _regions.Values
+                        .Where(runtime => runtime.ReferenceFrame is not null)
+                        .Select(runtime => new RegionSnapshot(
+                            runtime.Definition,
+                            runtime.ReferenceFrame!,
+                            runtime.RetryAfterUtc))
+                        .ToArray();
                 }
 
-                try
+                var observations = new List<RegionObservation>(snapshots.Length);
+                var errorChanges = new List<RegionStatusChangedEventArgs>();
+                var now = DateTimeOffset.UtcNow;
+
+                foreach (var snapshot in snapshots)
                 {
-                    var statistics = _screenSampler.Sample(
-                        region,
-                        currentSettings.TargetColor,
-                        currentSettings.ColorTolerance);
-                    Sampled?.Invoke(this, statistics);
-
-                    var transition = _stateMachine.Observe(
-                        statistics.MismatchRatio,
-                        currentSettings);
-
-                    switch (transition)
+                    if (snapshot.RetryAfterUtc > now)
                     {
-                        case AlertTransition.Triggered:
-                            await _alertPlayer.PlayAsync(currentAlertMode, cancellationToken);
-                            SetStatus(MonitorStatus.Alerted);
-                            break;
+                        continue;
+                    }
 
-                        case AlertTransition.Rearmed:
-                            SetStatus(MonitorStatus.Monitoring);
-                            break;
-
-                        case AlertTransition.None when Status == MonitorStatus.Error:
-                            SetStatus(_stateMachine.IsAlerted
-                                ? MonitorStatus.Alerted
-                                : MonitorStatus.Monitoring);
-                            break;
+                    try
+                    {
+                        var statistics = _screenSampler.Compare(
+                            snapshot.Definition.Bounds,
+                            snapshot.ReferenceFrame,
+                            currentSettings.PixelDifferenceTolerance);
+                        observations.Add(new RegionObservation(
+                            snapshot.Definition.Id,
+                            statistics.MismatchRatio));
+                    }
+                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    {
+                        lock (_stateLock)
+                        {
+                            if (_regions.TryGetValue(snapshot.Definition.Id, out var runtime))
+                            {
+                                runtime.Status = RegionMonitorStatus.Error;
+                                runtime.ErrorMessage = exception.Message;
+                                runtime.RetryAfterUtc = now.AddSeconds(1);
+                                errorChanges.Add(CreateEventArgs(runtime));
+                            }
+                        }
                     }
                 }
-                catch (Exception exception) when (exception is not OperationCanceledException)
+
+                RaiseRegionChanges(errorChanges);
+
+                MultiRegionAlertResult alertResult;
+                List<RegionStatusChangedEventArgs> sampleChanges = [];
+                lock (_stateLock)
                 {
-                    SetStatus(MonitorStatus.Error, exception.Message);
-                    await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+                    alertResult = _coordinator.Observe(observations, currentSettings);
+                    foreach (var result in alertResult.Regions)
+                    {
+                        if (!_regions.TryGetValue(result.RegionId, out var runtime))
+                        {
+                            continue;
+                        }
+
+                        runtime.MismatchRatio = observations
+                            .First(observation => observation.RegionId == result.RegionId)
+                            .MismatchRatio;
+                        runtime.Status = result.IsAlerted
+                            ? RegionMonitorStatus.Alerted
+                            : RegionMonitorStatus.Monitoring;
+                        runtime.ErrorMessage = null;
+                        runtime.RetryAfterUtc = DateTimeOffset.MinValue;
+                        sampleChanges.Add(CreateEventArgs(runtime));
+                    }
+                }
+
+                RaiseRegionChanges(sampleChanges);
+                SetStatus(GetAggregateStatus());
+
+                if (alertResult.ShouldAlert)
+                {
+                    await _alertPlayer.PlayAsync(currentAlertMode, cancellationToken);
                 }
 
                 if (!await timer.WaitForNextTickAsync(cancellationToken))
@@ -282,6 +466,41 @@ internal sealed class MonitorController : IAsyncDisposable
         cancellation.Dispose();
     }
 
+    private void SynchronizeRegionsCore(IReadOnlyList<MonitoredRegionDefinition> definitions)
+    {
+        var desiredIds = definitions.Select(definition => definition.Id).ToHashSet();
+        if (!_regions.Keys.ToHashSet().SetEquals(desiredIds) ||
+            definitions.Any(definition =>
+                !_regions.TryGetValue(definition.Id, out var runtime) ||
+                runtime.Definition.Bounds != definition.Bounds))
+        {
+            throw new InvalidOperationException("監看區域已變更，請先同步並建立基準畫面。");
+        }
+    }
+
+    private MonitorStatus GetAggregateStatus()
+    {
+        lock (_stateLock)
+        {
+            if (_regions.Values.Any(runtime => runtime.Status == RegionMonitorStatus.Error))
+            {
+                return MonitorStatus.Error;
+            }
+
+            return _regions.Values.Any(runtime => _coordinator.IsAlerted(runtime.Definition.Id))
+                ? MonitorStatus.Alerted
+                : MonitorStatus.Monitoring;
+        }
+    }
+
+    private void EnsureStopped()
+    {
+        if (_monitorTask is { IsCompleted: false })
+        {
+            throw new InvalidOperationException("變更監看區域前必須先暫停監看。");
+        }
+    }
+
     private void SetStatus(MonitorStatus status, string? errorMessage = null)
     {
         lock (_stateLock)
@@ -291,4 +510,40 @@ internal sealed class MonitorController : IAsyncDisposable
 
         StatusChanged?.Invoke(this, new MonitorStatusChangedEventArgs(status, errorMessage));
     }
+
+    private static RegionStatusChangedEventArgs CreateEventArgs(RegionRuntime runtime) =>
+        new(
+            runtime.Definition.Id,
+            runtime.Status,
+            runtime.MismatchRatio,
+            runtime.ReferenceFrame is not null,
+            runtime.ErrorMessage);
+
+    private void RaiseRegionChanges(IEnumerable<RegionStatusChangedEventArgs> changes)
+    {
+        foreach (var change in changes)
+        {
+            RegionStatusChanged?.Invoke(this, change);
+        }
+    }
+
+    private sealed class RegionRuntime(MonitoredRegionDefinition definition)
+    {
+        internal MonitoredRegionDefinition Definition { get; set; } = definition;
+
+        internal ReferenceFrame? ReferenceFrame { get; set; }
+
+        internal RegionMonitorStatus Status { get; set; } = RegionMonitorStatus.NeedsBaseline;
+
+        internal double MismatchRatio { get; set; }
+
+        internal string? ErrorMessage { get; set; }
+
+        internal DateTimeOffset RetryAfterUtc { get; set; }
+    }
+
+    private sealed record RegionSnapshot(
+        MonitoredRegionDefinition Definition,
+        ReferenceFrame ReferenceFrame,
+        DateTimeOffset RetryAfterUtc);
 }

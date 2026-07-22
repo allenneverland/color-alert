@@ -30,7 +30,7 @@ public sealed class AlertStateMachine
         if (!IsAlerted)
         {
             _resetFrameCount = 0;
-            _triggerFrameCount = mismatchRatio >= normalizedSettings.TriggerRatio
+            _triggerFrameCount = mismatchRatio >= normalizedSettings.ChangedPixelRatio
                 ? _triggerFrameCount + 1
                 : 0;
 

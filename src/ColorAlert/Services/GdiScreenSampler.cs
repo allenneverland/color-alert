@@ -43,10 +43,7 @@ internal sealed class GdiScreenSampler : IDisposable
         }
     }
 
-    internal SampleStatistics Sample(
-        ScreenRegion region,
-        RgbColor targetColor,
-        int colorTolerance)
+    internal ReferenceFrame CaptureReference(ScreenRegion region)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -59,17 +56,57 @@ internal sealed class GdiScreenSampler : IDisposable
         var targetHeight = Math.Min(region.Height, MaximumSampleDimension);
         EnsureBuffer(targetWidth, targetHeight);
         Capture(region, targetWidth, targetHeight);
-
         Marshal.Copy(_bits, _pixelBuffer, 0, _pixelBuffer.Length);
 
-        var normalizedTolerance = Math.Clamp(colorTolerance, 0, 255);
+        var bgrPixels = new byte[targetWidth * targetHeight * 3];
+        for (var sourceOffset = 0; sourceOffset < _pixelBuffer.Length; sourceOffset += BytesPerPixel)
+        {
+            var targetOffset = (sourceOffset / BytesPerPixel) * 3;
+            bgrPixels[targetOffset] = _pixelBuffer[sourceOffset];
+            bgrPixels[targetOffset + 1] = _pixelBuffer[sourceOffset + 1];
+            bgrPixels[targetOffset + 2] = _pixelBuffer[sourceOffset + 2];
+        }
+
+        return new ReferenceFrame(targetWidth, targetHeight, bgrPixels);
+    }
+
+    internal SampleStatistics Compare(
+        ScreenRegion region,
+        ReferenceFrame referenceFrame,
+        int pixelDifferenceTolerance)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(referenceFrame);
+
+        if (!region.IsValid)
+        {
+            throw new ArgumentException("監看區域無效。", nameof(region));
+        }
+
+        var expectedWidth = Math.Min(region.Width, MaximumSampleDimension);
+        var expectedHeight = Math.Min(region.Height, MaximumSampleDimension);
+        if (referenceFrame.Width != expectedWidth || referenceFrame.Height != expectedHeight)
+        {
+            throw new ArgumentException("基準畫面尺寸與監看區域不一致。", nameof(referenceFrame));
+        }
+
+        EnsureBuffer(referenceFrame.Width, referenceFrame.Height);
+        Capture(region, referenceFrame.Width, referenceFrame.Height);
+        Marshal.Copy(_bits, _pixelBuffer, 0, _pixelBuffer.Length);
+
+        var referencePixels = referenceFrame.BgrPixels.Span;
+        var normalizedTolerance = Math.Clamp(pixelDifferenceTolerance, 0, 255);
         var mismatchCount = 0;
 
-        for (var offset = 0; offset < _pixelBuffer.Length; offset += BytesPerPixel)
+        for (var sourceOffset = 0; sourceOffset < _pixelBuffer.Length; sourceOffset += BytesPerPixel)
         {
-            var blueDifference = Math.Abs(_pixelBuffer[offset] - targetColor.Blue);
-            var greenDifference = Math.Abs(_pixelBuffer[offset + 1] - targetColor.Green);
-            var redDifference = Math.Abs(_pixelBuffer[offset + 2] - targetColor.Red);
+            var referenceOffset = (sourceOffset / BytesPerPixel) * 3;
+            var blueDifference = Math.Abs(
+                _pixelBuffer[sourceOffset] - referencePixels[referenceOffset]);
+            var greenDifference = Math.Abs(
+                _pixelBuffer[sourceOffset + 1] - referencePixels[referenceOffset + 1]);
+            var redDifference = Math.Abs(
+                _pixelBuffer[sourceOffset + 2] - referencePixels[referenceOffset + 2]);
 
             if (redDifference > normalizedTolerance ||
                 greenDifference > normalizedTolerance ||
@@ -79,20 +116,7 @@ internal sealed class GdiScreenSampler : IDisposable
             }
         }
 
-        return new SampleStatistics(targetWidth * targetHeight, mismatchCount);
-    }
-
-    internal RgbColor SampleColorAt(int x, int y)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        EnsureBuffer(1, 1);
-        Capture(new ScreenRegion(x, y, 1, 1), 1, 1);
-        Marshal.Copy(_bits, _pixelBuffer, 0, BytesPerPixel);
-
-        return new RgbColor(
-            Red: _pixelBuffer[2],
-            Green: _pixelBuffer[1],
-            Blue: _pixelBuffer[0]);
+        return new SampleStatistics(referenceFrame.Width * referenceFrame.Height, mismatchCount);
     }
 
     public void Dispose()

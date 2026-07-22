@@ -63,7 +63,45 @@ public sealed class AlertStateMachineTests
     {
         var thresholds = DetectionSettings.GetThresholds(sensitivity);
 
-        Assert.AreEqual(expectedTolerance, thresholds.ColorTolerance);
-        Assert.AreEqual(expectedRatio, thresholds.TriggerRatio, 0.000_001);
+        Assert.AreEqual(expectedTolerance, thresholds.PixelDifferenceTolerance);
+        Assert.AreEqual(expectedRatio, thresholds.ChangedPixelRatio, 0.000_001);
+    }
+
+    [TestMethod]
+    public void MultipleRegionsCoalesceEachCycleAndKeepIndependentState()
+    {
+        var firstRegionId = Guid.NewGuid();
+        var secondRegionId = Guid.NewGuid();
+        var laterRegionId = Guid.NewGuid();
+        var coordinator = new MultiRegionAlertCoordinator();
+        coordinator.Synchronize([firstRegionId, secondRegionId, laterRegionId]);
+        var immediateSettings = Settings with { StableFrameCount = 1 };
+
+        var simultaneous = coordinator.Observe(
+            [
+                new RegionObservation(firstRegionId, 0.02),
+                new RegionObservation(secondRegionId, 0.02),
+            ],
+            immediateSettings);
+
+        Assert.IsTrue(simultaneous.ShouldAlert);
+        Assert.AreEqual(2, simultaneous.Regions.Count);
+        Assert.IsTrue(simultaneous.Regions.All(region =>
+            region.Transition == AlertTransition.Triggered));
+
+        var later = coordinator.Observe(
+            [new RegionObservation(laterRegionId, 0.02)],
+            immediateSettings);
+        Assert.IsTrue(later.ShouldAlert);
+
+        var rearmed = coordinator.Observe(
+            [new RegionObservation(firstRegionId, 0d)],
+            immediateSettings);
+        Assert.AreEqual(AlertTransition.Rearmed, rearmed.Regions[0].Transition);
+
+        var triggeredAgain = coordinator.Observe(
+            [new RegionObservation(firstRegionId, 0.02)],
+            immediateSettings);
+        Assert.IsTrue(triggeredAgain.ShouldAlert);
     }
 }

@@ -6,19 +6,17 @@ public sealed record DetectionSettings
     public const int DefaultSampleIntervalMilliseconds = 250;
     public const int DefaultStableFrameCount = 3;
 
-    public RgbColor TargetColor { get; init; } = RgbColor.Black;
-
     public int Sensitivity { get; init; } = DefaultSensitivity;
 
     public int SampleIntervalMilliseconds { get; init; } = DefaultSampleIntervalMilliseconds;
 
     public int StableFrameCount { get; init; } = DefaultStableFrameCount;
 
-    public int ColorTolerance => GetThresholds(Sensitivity).ColorTolerance;
+    public int PixelDifferenceTolerance => GetThresholds(Sensitivity).PixelDifferenceTolerance;
 
-    public double TriggerRatio => GetThresholds(Sensitivity).TriggerRatio;
+    public double ChangedPixelRatio => GetThresholds(Sensitivity).ChangedPixelRatio;
 
-    public double ResetRatio => TriggerRatio / 2d;
+    public double ResetRatio => ChangedPixelRatio / 2d;
 
     public DetectionSettings Normalize() => this with
     {
@@ -67,4 +65,6 @@ public sealed record DetectionSettings
         start + ((end - start) * progress);
 }
 
-public readonly record struct SensitivityThresholds(int ColorTolerance, double TriggerRatio);
+public readonly record struct SensitivityThresholds(
+    int PixelDifferenceTolerance,
+    double ChangedPixelRatio);
