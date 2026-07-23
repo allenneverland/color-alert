@@ -188,13 +188,13 @@
                                             CornerRadius="5"
                                             BorderBrush="#FFD0D5DD"
                                             BorderThickness="1"
-                                            Background="#FFCEB374" />
+                                            Background="#FFE3B341" />
                                     <StackPanel VerticalAlignment="Center">
                                         <TextBlock Text="顏色 1"
                                                    Foreground="{StaticResource TextBrush}"
                                                    FontWeight="SemiBold" />
                                         <TextBlock x:Name="PrimaryColorHexText"
-                                                   Text="#CEB374"
+                                                   Text="#E3B341"
                                                    Margin="0,2,0,0"
                                                    Foreground="{StaticResource MutedTextBrush}"
                                                    FontSize="12" />

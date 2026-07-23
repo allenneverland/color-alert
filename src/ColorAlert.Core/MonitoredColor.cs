@@ -13,7 +13,7 @@ public readonly record struct RgbColor(byte Red, byte Green, byte Blue)
 
 public static class TargetColorDefaults
 {
-    public static RgbColor Primary { get; } = new(0xCE, 0xB3, 0x74);
+    public static RgbColor Primary { get; } = new(0xE3, 0xB3, 0x41);
 
     public static RgbColor Secondary { get; } = new(0x60, 0x88, 0xC5);
 }
